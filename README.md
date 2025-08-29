@@ -4,7 +4,7 @@
 
 ## Overview
 
-This repository contains a comprehensive computer vision pipeline for analyzing **Recurrent Inhibitory Activity (RIA)** in *C. elegans* worms using **SAM2 (Segment Anything Model 2)** for video segmentation. The pipeline processes calcium imaging data to automatically segment and analyze neuronal regions (nrD and nrV) and head movement patterns.
+This repository contains a comprehensive computer vision pipeline for analyzing the **Ring Interneuron A** in *C. elegans* worms in an olfactory chip using **SAM2 (Segment Anything Model 2)** for video segmentation. The pipeline processes calcium imaging data to automatically segment and analyze neuronal regions (nrD and nrV) and head movement patterns.
 
 ## Pipeline Workflow
 
