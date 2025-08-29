@@ -4,13 +4,13 @@
 
 ## Overview
 
-This repository contains a comprehensive computer vision pipeline for analyzing the **Ring Interneuron A** in *C. elegans* worms in an olfactory chip using **SAM2 (Segment Anything Model 2)** for video segmentation. The pipeline processes calcium imaging data to automatically segment and analyze neuronal regions (nrD and nrV) and head movement patterns.
+This repository contains a comprehensive computer vision pipeline for analyzing the **RIA interneuron** in *C. elegans* worms in an olfactory chip using **SAM2 (Segment Anything Model 2)** for video segmentation. The pipeline processes calcium imaging data to automatically segment and analyze neuronal regions (nrD and nrV) and head movement patterns.
 
 ## Pipeline Workflow
 
 The analysis pipeline consists of 7 sequential steps, each handled by a numbered Python script:
 
-### 1. **Convert TIF to Stack** (`1Convert TIF to Stack.py`)
+### 1. **Convert TIF to Stack** (`1ConvertTIFFtoStack.py`)
 - **Purpose**: Converts individual TIFF files into multi-frame TIFF stacks
 - **Input**: Directory containing individual TIFF files
 - **Output**: Multi-frame TIFF stacks (`*_stack.tiff`)
@@ -25,7 +25,7 @@ The analysis pipeline consists of 7 sequential steps, each handled by a numbered
   - Preserves dynamic range while converting to 8-bit
   - Maintains metadata for processing verification
 
-### 3. **Automatic Cropping** (`3auto_crop_SebV.py`)
+### 3. **Automatic Cropping** (`3AutoCrop.py`)
 - **Purpose**: Automatically crops videos around the RIA region using SAM2
 - **Input**: JPG frame sequences or TIFF stacks
 - **Output**: Cropped frame sequences in `CROP/` and `CROP_JPG/` directories
@@ -34,7 +34,7 @@ The analysis pipeline consists of 7 sequential steps, each handled by a numbered
   - SAM2-based region tracking across frames
   - Fixed crop window calculation for consistent region extraction
 
-### 4. **Autoprompting Segmentation** (`4Autoprompting_SebV.py`)
+### 4. **RIA Mask Generation** (`4RIAMaskGen.py`)
 - **Purpose**: Performs SAM2 video segmentation with interactive prompts for nrD and nrV neurons
 - **Input**: Cropped JPG frame sequences from step 3
 - **Output**: 
@@ -46,7 +46,7 @@ The analysis pipeline consists of 7 sequential steps, each handled by a numbered
   - Quality analysis and re-prompting capabilities
   - Chunked processing for large videos
 
-### 5. **Mask Analysis** (`5AnalyzeMasks_SebV.py`)
+### 5. **Mask Analysis** (`5AnalyzeMasks.py`)
 - **Purpose**: Extracts brightness and morphometric data from segmented regions
 - **Input**: H5 mask files from step 4 and corresponding TIFF stacks
 - **Output**: CSV files with quantitative measurements in `ANALYSIS/`
@@ -57,13 +57,13 @@ The analysis pipeline consists of 7 sequential steps, each handled by a numbered
   - Pixel counts and spatial statistics
   - Left/right side determination
 
-### 6. **Head Segmentation** (`6SegmentWorm_SebV.py`)
+### 6. **Head Segmentation** (`6SegmentWorm.py`)
 - **Purpose**: Segments worm head regions using SAM2 for head angle analysis
 - **Input**: JPG frame sequences
 - **Output**: Head segmentation masks in `HEAD_SEGMENT/` directory
 - **Method**: Similar to step 4 but focused on head region segmentation
 
-### 7. **Head Angle Analysis** (`7headangle.py`)
+### 7. **Head Angle Analysis** (`7HeadAngle.py`)
 - **Purpose**: Calculates head angles and bend positions from head segmentation masks
 - **Input**: Head segmentation H5 files from step 6
 - **Output**: Head angle measurements and analysis in `HEADBEND_ANALYSIS/`
@@ -77,13 +77,13 @@ The analysis pipeline consists of 7 sequential steps, each handled by a numbered
 
 ```
 RIA_segmentation/
-├── 1Convert TIF to Stack.py     # Step 1: TIFF stack creation
+├── 1ConvertTIFFtoStack.py       # Step 1: TIFF stack creation
 ├── 2TIFF2JPG.py                 # Step 2: Format conversion
-├── 3auto_crop_SebV.py           # Step 3: Automatic cropping
-├── 4Autoprompting_SebV.py       # Step 4: RIA segmentation
-├── 5AnalyzeMasks_SebV.py        # Step 5: Brightness analysis
-├── 6SegmentWorm_SebV.py         # Step 6: Head segmentation
-├── 7headangle.py                # Step 7: Head angle analysis
+├── 3AutoCrop.py                 # Step 3: Automatic cropping
+├── 4RIAMaskGen.py               # Step 4: RIA segmentation
+├── 5AnalyzeMasks.py             # Step 5: Brightness analysis
+├── 6SegmentWorm.py              # Step 6: Head segmentation
+├── 7HeadAngle.py                # Step 7: Head angle analysis
 ├── TIFF/                        # Input TIFF stacks
 ├── JPG/                         # Converted JPG sequences
 ├── CROP/                        # Cropped TIFF stacks
