@@ -4,11 +4,11 @@
 
 ## Overview
 
-This repository contains a comprehensive computer vision pipeline for analyzing the **RIA interneuron** in *C. elegans* worms in an olfactory chip using **SAM2 (Segment Anything Model 2)** for video segmentation. The pipeline processes calcium imaging data to automatically segment and analyze neuronal regions (nrD and nrV) and head movement patterns.
+This repository contains a computer vision pipeline for analyzing the **RIA interneuron** in *C. elegans* worms in an olfactory chip using **SAM2 (Segment Anything Model 2)** for video segmentation. The pipeline processes calcium imaging data to automatically segment and analyze neuronal regions (nrD and nrV) and head movement patterns.
 
 ## Pipeline Workflow
 
-The analysis pipeline consists of 7 sequential steps, each handled by a numbered Python script:
+The analysis pipeline consists of 7 steps, each handled by a numbered Python script:
 
 ### 1. **Convert TIF to Stack** (`1ConvertTIFFtoStack.py`)
 - **Purpose**: Converts individual TIFF files into multi-frame TIFF stacks
@@ -41,7 +41,7 @@ The analysis pipeline consists of 7 sequential steps, each handled by a numbered
   - Segmentation masks saved as H5 files in `Segmentation/`
   - Optional overlay videos for quality inspection
 - **Features**:
-  - Interactive point-based prompting (positive/negative clicks)
+  - Interactive bounding box selection on first frame
   - Temporal mask propagation across video frames
   - Quality analysis and re-prompting capabilities
   - Chunked processing for large videos
@@ -97,7 +97,7 @@ RIA_segmentation/
 ## Requirements
 
 - **Python 3.8+**
-- **SAM2** (Segment Anything Model 2)
+- **SAM2** (Segment Anything 2)
 - **PyTorch** (CUDA-enabled for GPU acceleration)
 - **OpenCV** (`cv2`)
 - **tifffile**
