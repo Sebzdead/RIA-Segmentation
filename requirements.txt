@@ -1,0 +1,30 @@
+# RIA Segmentation Pipeline Requirements
+# Compatible with Python 3.8+
+
+# Core dependencies
+numpy>=1.21.0
+pandas>=1.3.0
+scipy>=1.7.0
+matplotlib>=3.4.0
+Pillow>=8.3.0
+opencv-python>=4.5.0
+h5py>=3.1.0
+tifffile>=2021.7.2
+tqdm>=4.62.0
+scikit-image>=0.18.0
+
+# Deep Learning Framework
+torch>=1.11.0
+torchvision>=0.12.0
+
+# SAM2 Dependencies
+# Note: SAM2 must be installed separately from the official repository
+# git+https://github.com/facebookresearch/segment-anything-2.git
+
+# Optional: For CUDA support (uncomment if using GPU)
+# torch>=1.11.0+cu113
+# torchvision>=0.12.0+cu113
+
+# Development and testing (optional)
+# pytest>=6.0.0
+# jupyter>=1.0.0

@@ -94,40 +94,65 @@ RIA_segmentation/
 └── HEADBEND_ANALYSIS/           # Head angle measurements (CSV)
 ```
 
+## Installation
+
+### Quick Setup
+```bash
+# Clone repository
+git clone https://github.com/Sebzdead/RIA-Segmentation.git
+cd RIA-Segmentation
+
+# Create virtual environment
+conda create -n ria_segmentation python=3.9
+conda activate ria_segmentation
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install SAM2
+git clone https://github.com/facebookresearch/segment-anything-2.git
+cd segment-anything-2 && pip install -e . && cd ..
+```
+
+**📋 For detailed installation instructions, see [INSTALL.md](INSTALL.md)**
+
 ## Requirements
 
+### Core Dependencies
 - **Python 3.8+**
-- **SAM2** (Segment Anything 2)
 - **PyTorch** (CUDA-enabled for GPU acceleration)
+- **SAM2** (Segment Anything 2)
 - **OpenCV** (`cv2`)
-- **tifffile**
-- **h5py**
-- **pandas**
-- **numpy**
-- **matplotlib**
-- **scipy**
-- **scikit-image**
-- **tqdm**
+- **NumPy, Pandas, SciPy, Matplotlib**
+- **h5py, tifffile, scikit-image, tqdm**
+
+### Hardware Recommendations
+- **RAM**: 16GB+ 
+- **GPU**: 8GB+ VRAM (for large SAM2 models)
+- **Storage**: 50GB+ for models and processed data
 
 ## SAM2 Setup
 
-The pipeline uses SAM2 for video segmentation. Ensure you have:
-- SAM2 checkpoints (e.g., `sam2.1_hiera_base_plus.pt`)
-- SAM2 model configuration files
-- Proper device setup (CUDA/MPS/CPU)
+The pipeline uses SAM2 for video segmentation. After installation:
 
-Checkpoint paths are configured in each segmentation script:
+1. **Download Model Checkpoints**:
+   - Tiny: `sam2.1_hiera_tiny.pt` (fastest)
+   - Base+: `sam2.1_hiera_base_plus.pt` (balanced)
+   - Large: `sam2.1_hiera_large.pt` (most accurate)
+
+2. **Configure Paths** in processing scripts:
 ```python
-sam2_checkpoint = r"path/to/sam2/checkpoints/sam2.1_hiera_base_plus.pt"
-model_cfg = r"path/to/sam2/configs/sam2.1/sam2.1_hiera_b+.yaml"
+sam2_checkpoint = r"path/to/sam2_checkpoints/sam2.1_hiera_base_plus.pt"
+model_cfg = r"path/to/segment-anything-2/sam2/configs/sam2.1/sam2.1_hiera_b+.yaml"
 ```
 
 ## Usage
 
-1. **Prepare Data**: Place your TIFF files in the `TIFF/` directory
-2. **Run Pipeline**: Execute scripts in numerical order (1-7)
-3. **Interactive Steps**: Scripts 3, 4, and 6 require user interaction for initial prompting
-4. **Monitor Progress**: Each script provides detailed progress feedback and quality metrics
+1. **Install Dependencies**: Follow installation guide in [INSTALL.md](INSTALL.md)
+2. **Prepare Data**: Place your TIFF files in the `TIFF/` directory
+3. **Run Pipeline**: Execute scripts in numerical order (1-7)
+4. **Interactive Steps**: Scripts 3, 4, and 6 require user interaction for initial prompting
+5. **Monitor Progress**: Each script provides detailed progress feedback and quality metrics
 5. **Review Results**: Check output directories for processed data and analysis results
 
 ## Key Features
