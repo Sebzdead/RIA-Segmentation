@@ -62,9 +62,9 @@ VIS_INTERVAL = 10  # visualize masks every N frames
 CONFIDENCE_THRESHOLD = 0.8  # minimum confidence score (0-1)
 QUALITY_CHECK_INTERVAL = 10  # check quality every N frames
 
-crop_videos_dir = 'CROP_JPG/good'
-segmented_videos_dir = 'Segmentation'
-output_dir = 'Segmentation'
+crop_videos_dir = '4CROP_JPG'
+segmented_videos_dir = '5RIA_SEGMENT'
+output_dir = '5RIA_SEGMENT'
 # Remove the static output_video_path - will be generated dynamically
 # output_video_path = "mask_overlay.mp4"
 

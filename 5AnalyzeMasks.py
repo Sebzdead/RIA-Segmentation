@@ -7,9 +7,9 @@ import pandas as pd
 from scipy.ndimage import distance_transform_edt
 
 # Directory paths for input segments, output analysis data, and video frames
-segments_dir = r'C:\Users\switte3\Documents\RIA_segmentation\Segmentation'
-video_dir = r'C:\Users\switte3\Documents\RIA_segmentation\CROP\good'
-final_data_dir = r'C:\Users\switte3\Documents\RIA_segmentation\ANALYSIS'
+segments_dir = '5RIA_SEGMENT'
+video_dir = '3CROP'
+final_data_dir = '6ANALYSIS'
 
 def load_cleaned_segments_from_h5(filename):
     """

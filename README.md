@@ -19,7 +19,7 @@ The analysis pipeline consists of 7 steps, each handled by a numbered Python scr
 ### 2. **TIFF to JPG Conversion** (`2TIFF2JPG.py`)
 - **Purpose**: Converts TIFF stacks to JPG image sequences with proper normalization
 - **Input**: TIFF stacks from step 1
-- **Output**: JPG frame sequences in `JPG/` directory
+- **Output**: JPG frame sequences in `2JPG/` directory
 - **Features**: 
   - Multiple normalization methods (minmax, percentile, global)
   - Preserves dynamic range while converting to 8-bit
@@ -28,7 +28,7 @@ The analysis pipeline consists of 7 steps, each handled by a numbered Python scr
 ### 3. **Automatic Cropping** (`3AutoCrop.py`)
 - **Purpose**: Automatically crops videos around the RIA region using SAM2
 - **Input**: JPG frame sequences or TIFF stacks
-- **Output**: Cropped frame sequences in `CROP/` and `CROP_JPG/` directories
+- **Output**: Cropped frame sequences in `3CROP/` and `4CROP_JPG/` directories
 - **Method**: 
   - Interactive bounding box selection on first frame
   - SAM2-based region tracking across frames
@@ -38,7 +38,7 @@ The analysis pipeline consists of 7 steps, each handled by a numbered Python scr
 - **Purpose**: Performs SAM2 video segmentation with interactive prompts for nrD and nrV neurons
 - **Input**: Cropped JPG frame sequences from step 3
 - **Output**: 
-  - Segmentation masks saved as H5 files in `Segmentation/`
+  - Segmentation masks saved as H5 files in `5RIA_SEGMENT/`
   - Optional overlay videos for quality inspection
 - **Features**:
   - Interactive bounding box selection on first frame
@@ -49,7 +49,7 @@ The analysis pipeline consists of 7 steps, each handled by a numbered Python scr
 ### 5. **Mask Analysis** (`5AnalyzeMasks.py`)
 - **Purpose**: Extracts brightness and morphometric data from segmented regions
 - **Input**: H5 mask files from step 4 and corresponding TIFF stacks
-- **Output**: CSV files with quantitative measurements in `ANALYSIS/`
+- **Output**: CSV files with quantitative measurements in `6ANALYSIS/`
 - **Measurements**:
   - Mean brightness values for each segmented region
   - Background-corrected brightness values
@@ -60,13 +60,13 @@ The analysis pipeline consists of 7 steps, each handled by a numbered Python scr
 ### 6. **Head Segmentation** (`6SegmentWorm.py`)
 - **Purpose**: Segments worm head regions using SAM2 for head angle analysis
 - **Input**: JPG frame sequences
-- **Output**: Head segmentation masks in `HEAD_SEGMENT/` directory
+- **Output**: Head segmentation masks in `7HEAD_SEGMENT/` directory
 - **Method**: Similar to step 4 but focused on head region segmentation
 
 ### 7. **Head Angle Analysis** (`7HeadAngle.py`)
 - **Purpose**: Calculates head angles and bend positions from head segmentation masks
 - **Input**: Head segmentation H5 files from step 6
-- **Output**: Head angle measurements and analysis in `HEADBEND_ANALYSIS/`
+- **Output**: Head angle measurements and analysis in `8HEAD_ANGLE/`
 - **Analysis**:
   - Skeleton extraction from head masks
   - Gaussian-weighted curvature calculation
@@ -84,14 +84,14 @@ RIA_segmentation/
 ├── 5AnalyzeMasks.py             # Step 5: Brightness analysis
 ├── 6SegmentWorm.py              # Step 6: Head segmentation
 ├── 7HeadAngle.py                # Step 7: Head angle analysis
-├── TIFF/                        # Input TIFF stacks
-├── JPG/                         # Converted JPG sequences
-├── CROP/                        # Cropped TIFF stacks
-├── CROP_JPG/                    # Cropped JPG sequences
-├── Segmentation/                # RIA segmentation masks (H5)
-├── HEAD_SEGMENT/                # Head segmentation masks (H5)
-├── ANALYSIS/                    # Final brightness measurements (CSV)
-└── HEADBEND_ANALYSIS/           # Head angle measurements (CSV)
+├── 1TIFF/                       # Input TIFF stacks
+├── 2JPG/                        # Converted JPG sequences
+├── 3CROP/                       # Cropped TIFF stacks
+├── 4CROP_JPG/                   # Cropped JPG sequences
+├── 5RIA_SEGMENT/                # RIA segmentation masks (H5)
+├── 6ANALYSIS/                   # Final brightness measurements (CSV)
+├── 7HEAD_SEGMENT/               # Head segmentation masks (H5)
+└── 8HEAD_ANGLE/                 # Head angle measurements (CSV)
 ```
 
 ## Installation
@@ -103,8 +103,8 @@ git clone https://github.com/Sebzdead/RIA-Segmentation.git
 cd RIA-Segmentation
 
 # Create virtual environment
-conda create -n ria_segmentation python=3.9
-conda activate ria_segmentation
+conda create -n sam2_segmentation python=3.9
+conda activate sam2_segmentation
 
 # Install dependencies
 pip install -r requirements.txt
@@ -149,7 +149,7 @@ model_cfg = r"path/to/segment-anything-2/sam2/configs/sam2.1/sam2.1_hiera_b+.yam
 ## Usage
 
 1. **Install Dependencies**: Follow installation guide in [INSTALL.md](INSTALL.md)
-2. **Prepare Data**: Place your TIFF files in the `TIFF/` directory
+2. **Prepare Data**: Place your TIFF files in the `1TIFF/` directory
 3. **Run Pipeline**: Execute scripts in numerical order (1-7)
 4. **Interactive Steps**: Scripts 3, 4, and 6 require user interaction for initial prompting
 5. **Monitor Progress**: Each script provides detailed progress feedback and quality metrics
@@ -174,7 +174,7 @@ The pipeline generates comprehensive datasets including:
 
 ## Citation
 
-If you use this pipeline in your research, please cite the associated publication and acknowledge the use of SAM2 for video segmentation.
+If you use this pipeline in your research, please cite the associated publication (FORTHCOMING) and acknowledge the use of SAM2 for video segmentation.
 
 ## Support
 

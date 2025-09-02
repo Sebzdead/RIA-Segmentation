@@ -24,8 +24,8 @@ sam2_checkpoint = r"c:\Users\switte3\Documents\sam2\checkpoints\sam2.1_hiera_lar
 model_cfg = r"c:\Users\switte3\Documents\sam2\sam2\configs\sam2.1\sam2.1_hiera_l.yaml"
 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
 
-jpg_video_dir = 'JPG'
-head_segmentation_dir = 'HEAD_SEGMENT'
+jpg_video_dir = '2JPG'
+head_segmentation_dir = '7HEAD_SEGMENT'
 
 # Add quality thresholds and processing constants
 CONFIDENCE_THRESHOLD = 0.9  # minimum confidence score (0-1)

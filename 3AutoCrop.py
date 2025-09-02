@@ -27,9 +27,9 @@ sam2_checkpoint = r"c:\Users\switte3\Documents\sam2\checkpoints\sam2.1_hiera_tin
 model_cfg = r"c:\Users\switte3\Documents\sam2\sam2\configs\sam2.1\sam2.1_hiera_t.yaml"
 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
 
-parent_video_dir = 'JPG'
-crop_dir = 'CROP'
-tiff_dir = 'TIFF/rerun'
+parent_video_dir = '2JPG'
+crop_dir = '3CROP'
+tiff_dir = '1TIFF'
 
 # Add quality thresholds and visualization constants
 CONFIDENCE_THRESHOLD = 0.9  # minimum confidence score (0-1)

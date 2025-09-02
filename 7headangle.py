@@ -12,8 +12,8 @@ import numpy.linalg as la
 import re
 import cv2
 
-head_segmentation_dir = "HEAD_SEGMENT"
-final_data_dir = "HEADBEND_ANALYSIS"
+head_segmentation_dir = "7HEAD_SEGMENT"
+final_data_dir = "8HEAD_ANGLE"
 
 def load_cleaned_segments_from_h5(filename):
     cleaned_segments = {}
@@ -40,9 +40,12 @@ def get_random_unprocessed_video(head_segmentation_dir, final_data_dir):
     processable_videos = []
     for video in all_videos:
         base_name = video.replace("_headsegmentation.h5", "")
-        final_data_base = base_name + "_crop_riasegmentation"        
-        if os.path.exists(os.path.join(final_data_dir, final_data_base + "_cleanedalignedsegments.csv")) and \
-           not os.path.exists(os.path.join(final_data_dir, final_data_base + "_headangles.csv")):
+        # Look for files with the pattern *_stack_crop.csv
+        input_csv_name = base_name + "_stack_crop.csv"
+        output_csv_name = base_name + "_stack_crop_headangles.csv"
+        
+        if os.path.exists(os.path.join(final_data_dir, input_csv_name)) and \
+           not os.path.exists(os.path.join(final_data_dir, output_csv_name)):
             processable_videos.append(video)
     
     if not processable_videos:
@@ -712,9 +715,11 @@ def decay_result(base_result, decay_factor, straight_threshold=3):
 
 def save_head_angles_with_side_correction(filename, results_df, final_data_dir):
     base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
-    final_data_base = base_name + "_crop_riasegmentation_cleanedalignedsegments"
+    # Use the new naming convention
+    input_csv_name = base_name + "_stack_crop.csv"
+    output_csv_name = base_name + "_stack_crop_headangles.csv"
 
-    final_data_path = os.path.join(final_data_dir, final_data_base + ".csv")
+    final_data_path = os.path.join(final_data_dir, input_csv_name)
     final_df = pd.read_csv(final_data_path)
 
     print(f"Loaded final data from {final_data_path}")
@@ -742,7 +747,7 @@ def save_head_angles_with_side_correction(filename, results_df, final_data_dir):
     print(f"Number of right-side angles corrected: {(merged_df['side_position'] == 'right').sum()}")
     print(f"Number of left-side angles: {(merged_df['side_position'] == 'left').sum()}")
 
-    output_path = os.path.join(final_data_dir, final_data_base + "_headangles.csv")
+    output_path = os.path.join(final_data_dir, output_csv_name)
 
     merged_df.to_csv(output_path, index=False)
     print(f"Saved merged df to: {output_path}")
