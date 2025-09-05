@@ -29,7 +29,7 @@ predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
 
 parent_video_dir = '2JPG'
 crop_dir = '3CROP'
-tiff_dir = '1TIFF'
+tiff_dir = r'D:\20250901_TIF'
 
 # Add quality thresholds and visualization constants
 CONFIDENCE_THRESHOLD = 0.9  # minimum confidence score (0-1)

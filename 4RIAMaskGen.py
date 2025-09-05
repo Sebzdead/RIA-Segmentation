@@ -68,7 +68,7 @@ output_dir = '5RIA_SEGMENT'
 # Remove the static output_video_path - will be generated dynamically
 # output_video_path = "mask_overlay.mp4"
 
-def interactive_collect_bboxes(image_path, object_ids=None):
+def interactive_collect_bboxes(image_path, object_ids=None, allow_skip=False):
     """
     Collect bounding box prompts on a single image interactively.
 
@@ -77,11 +77,13 @@ def interactive_collect_bboxes(image_path, object_ids=None):
     - Click and drag: draw bounding box for current object
     - u: undo last box for current object
     - c: clear current object's boxes
+    - s: skip (if allow_skip=True)
     - enter/q: finish and return
     - Use matplotlib toolbar for zoom/pan
 
     Returns:
         dict[int, np.ndarray] mapping obj_id -> bbox[4] (x1, y1, x2, y2)
+        Returns None if user chooses to skip (when allow_skip=True)
     """
     if object_ids is None:
         object_ids = tuple(sorted(OBJECTS.keys()))
@@ -97,6 +99,7 @@ def interactive_collect_bboxes(image_path, object_ids=None):
     # per-object storage
     storage = {oid: {"boxes": []} for oid in object_ids}
     current_obj = object_ids[0]
+    skip_video = False
     
     # Drawing state
     drawing = False
@@ -139,9 +142,10 @@ def interactive_collect_bboxes(image_path, object_ids=None):
             obj_lines.append(f"{oid}:{name}  boxes:{len(boxes)}")
         obj_list = ",  ".join(obj_lines)
         
+        skip_text = ", s=skip video" if allow_skip else ""
         ax.text(0.01, 0.99,
             f"Active={current_obj}:{OBJECTS.get(current_obj,'')} | Total boxes: {total}\n"
-            f"Keys: 1-2 select obj, click+drag=draw box, u=undo, c=clear, enter/q=finish\n"
+            f"Keys: 1-2 select obj, click+drag=draw box, u=undo, c=clear{skip_text}, enter/q=finish\n"
             f"Use toolbar above for zoom/pan. Objects: {obj_list}",
             transform=ax.transAxes, va='top', ha='left', color='white',
             bbox=dict(facecolor='black', alpha=0.7, edgecolor='none'))
@@ -218,7 +222,7 @@ def interactive_collect_bboxes(image_path, object_ids=None):
         start_point = None
 
     def on_key(event):
-        nonlocal current_obj
+        nonlocal current_obj, skip_video
         key = event.key
         if not key:
             return
@@ -238,6 +242,10 @@ def interactive_collect_bboxes(image_path, object_ids=None):
             storage[current_obj] = {"boxes": []}
             redraw()
             return
+        if key == 's' and allow_skip:
+            skip_video = True
+            plt.close(fig)
+            return
         if key in ('enter', 'return', 'q'):
             plt.close(fig)
             return
@@ -252,6 +260,10 @@ def interactive_collect_bboxes(image_path, object_ids=None):
     fig.canvas.mpl_disconnect(cid2)
     fig.canvas.mpl_disconnect(cid3)
     fig.canvas.mpl_disconnect(cid4)
+
+    # Return None if user chose to skip
+    if skip_video:
+        return None
 
     # convert to numpy arrays and return the most recent box for each object
     out = {}
@@ -386,7 +398,7 @@ def check_distance(mask1, mask2, max_distance=10):
 
 def check_mask_quality(video_segments, frame_idx, confidence_scores=None):
     """
-    Check if masks meet confidence quality threshold.
+    Check if masks meet confidence quality threshold and size requirements.
     
     Args:
         video_segments (dict): Current video segments
@@ -413,6 +425,27 @@ def check_mask_quality(video_segments, frame_idx, confidence_scores=None):
     
     if missing_objects:
         quality_report["issues"].append(f"Missing objects: {missing_objects}")
+    
+    # Check mask sizes (must be between 10 and 200 pixels)
+    undersized_masks = []
+    oversized_masks = []
+    for obj_id in OBJECTS.keys():
+        if obj_id in video_segments[frame_idx] and video_segments[frame_idx][obj_id] is not None:
+            mask = video_segments[frame_idx][obj_id]
+            mask_size = np.sum(mask > 0.5) if isinstance(mask, np.ndarray) else torch.sum(mask > 0.5).item()
+            
+            if mask_size < 10:
+                undersized_masks.append(obj_id)
+                needs_reprompt = True
+            elif mask_size > 500:
+                oversized_masks.append(obj_id)
+                needs_reprompt = True
+    
+    if undersized_masks:
+        quality_report["issues"].append(f"Undersized masks (< 10 pixels): {undersized_masks}")
+    
+    if oversized_masks:
+        quality_report["issues"].append(f"Oversized masks (> 500 pixels): {oversized_masks}")
     
     # Check confidence scores if provided
     low_confidence = []
@@ -1198,6 +1231,8 @@ active_predictor = predictor  # keep GPU/MPS
 i = 0
 chunk_id = 0
 prev_last_frame_idx = None
+video_skipped = False  # Flag to track if video was skipped
+
 while i < len(all_indices):
     # Determine chunk range with overlap
     end_idx_exclusive = min(i + CHUNK_SIZE, len(all_indices))
@@ -1224,6 +1259,12 @@ while i < len(all_indices):
         print("- u=undo, c=clear current object, enter/q=finish")
         print("- Use toolbar above for zoom/pan")
         new_chunk_bboxes = interactive_collect_bboxes(seed_frame_path, object_ids=(1, 2))
+        
+        # Check if user skipped the video at the very beginning
+        if new_chunk_bboxes is None:
+            print("User chose to skip this video at the beginning. Moving to next video...")
+            video_skipped = True
+            break  # Break out of chunk processing loop
     else:
         new_chunk_bboxes = None
 
@@ -1302,12 +1343,16 @@ while i < len(all_indices):
                 print("Please draw new bounding boxes to improve tracking quality.")
                 print("- Number keys 1..2 select object id (1:nrD, 2:nrV)")
                 print("- Click and drag to draw bounding box")
-                print("- u=undo, c=clear current object, enter/q=finish")
+                print("- u=undo, c=clear current object, s=skip video, enter/q=finish")
                 print("- Use toolbar above for zoom/pan")
                 
-                new_bboxes = interactive_collect_bboxes(current_frame_path, object_ids=(1, 2))
+                new_bboxes = interactive_collect_bboxes(current_frame_path, object_ids=(1, 2), allow_skip=True)
                 
-                if new_bboxes:
+                if new_bboxes is None:
+                    print("User chose to skip this video. Moving to next video...")
+                    video_skipped = True
+                    break  # Break out of the propagation loop to skip to next video
+                elif new_bboxes:
                     # Convert global frame index to local frame index for this chunk
                     local_frame_idx = out_local_idx
                     
@@ -1344,6 +1389,10 @@ while i < len(all_indices):
                     
             except Exception as e:
                 print(f"[viz] Failed to save overlay for frame {global_idx}: {e}")
+
+    # If video was skipped during quality check, break out of chunk loop
+    if video_skipped:
+        break
 
     prev_last_frame_idx = indices[-1]
     # Advance to next non-overlapping position
