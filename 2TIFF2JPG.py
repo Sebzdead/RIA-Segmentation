@@ -180,8 +180,8 @@ def main():
     """Main function with configurable parameters."""
     
     # Configuration
-    input_directory = "3CROP"  # Directory containing TIFF stacks
-    output_directory = "4CROP_JPG"  # Directory to save JPG sequences
+    input_directory = "1TIFF"  # Directory containing TIFF stacks
+    output_directory = "2JPG"  # Directory to save JPG sequences
     
     # Normalization options:
     # 'minmax' - Simple min-max normalization per frame (preserves frame-to-frame variation)

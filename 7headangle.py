@@ -13,6 +13,7 @@ import re
 import cv2
 
 head_segmentation_dir = "7HEAD_SEGMENT"
+csv_input_dir = "6ANALYSIS"
 final_data_dir = "8HEAD_ANGLE"
 
 def load_cleaned_segments_from_h5(filename):
@@ -34,17 +35,17 @@ def load_cleaned_segments_from_h5(filename):
     print(f"Cleaned segments loaded from {filename}")
     return cleaned_segments
 
-def get_random_unprocessed_video(head_segmentation_dir, final_data_dir):
+def get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_data_dir):
     all_videos = [f for f in os.listdir(head_segmentation_dir) if f.endswith("_headsegmentation.h5")]
     
     processable_videos = []
     for video in all_videos:
         base_name = video.replace("_headsegmentation.h5", "")
-        # Look for files with the pattern *_stack_crop.csv
-        input_csv_name = base_name + "_stack_crop.csv"
-        output_csv_name = base_name + "_stack_crop_headangles.csv"
+        # Look for files with the pattern *_crop.csv
+        input_csv_name = base_name + "_crop.csv"
+        output_csv_name = base_name + "_crop_headangles.csv"
         
-        if os.path.exists(os.path.join(final_data_dir, input_csv_name)) and \
+        if os.path.exists(os.path.join(csv_input_dir, input_csv_name)) and \
            not os.path.exists(os.path.join(final_data_dir, output_csv_name)):
             processable_videos.append(video)
     
@@ -713,17 +714,17 @@ def decay_result(base_result, decay_factor, straight_threshold=3):
     decayed['is_straight'] = False
     return decayed
 
-def save_head_angles_with_side_correction(filename, results_df, final_data_dir):
+def save_head_angles(filename, results_df, csv_input_dir, final_data_dir):
     base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
     # Use the new naming convention
-    input_csv_name = base_name + "_stack_crop.csv"
-    output_csv_name = base_name + "_stack_crop_headangles.csv"
+    input_csv_name = base_name + "_crop.csv"
+    output_csv_name = base_name + "_crop_headangles.csv"
 
-    final_data_path = os.path.join(final_data_dir, input_csv_name)
-    final_df = pd.read_csv(final_data_path)
+    input_csv_path = os.path.join(csv_input_dir, input_csv_name)
+    final_df = pd.read_csv(input_csv_path)
 
-    print(f"Loaded final data from {final_data_path}")
-    print(f"Final data shape: {final_df.shape}")
+    print(f"Loaded input data from {input_csv_path}")
+    print(f"Input data shape: {final_df.shape}")
     print(f"Results df shape: {results_df.shape}")
 
     columns_to_overwrite = [col for col in results_df.columns if col in final_df.columns]
@@ -739,24 +740,12 @@ def save_head_angles_with_side_correction(filename, results_df, final_data_dir):
         if col + '_old' in merged_df.columns:
             merged_df.drop(columns=[col + '_old'], inplace=True)
 
-    merged_df['angle_degrees_corrected'] = merged_df.apply(
-        lambda row: -row['angle_degrees'] if row['side_position'] == 'right' else row['angle_degrees'], 
-        axis=1
-    )
-
-    print(f"Number of right-side angles corrected: {(merged_df['side_position'] == 'right').sum()}")
-    print(f"Number of left-side angles: {(merged_df['side_position'] == 'left').sum()}")
-
     output_path = os.path.join(final_data_dir, output_csv_name)
 
     merged_df.to_csv(output_path, index=False)
     print(f"Saved merged df to: {output_path}")
     print(f"Final merged df shape: {merged_df.shape}")
     print(f"Final columns: {merged_df.columns.tolist()}")
-
-    if os.path.exists(final_data_path):
-        os.remove(final_data_path)
-        print(f"Deleted existing file: {final_data_path}")
         
     return merged_df
 
@@ -880,7 +869,7 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
     top_mask_colors = {mask_id: top_colors[i % len(top_colors)] 
                       for i, mask_id in enumerate(top_mask_ids)}
 
-    angles_dict = angles_df.set_index('frame')['angle_degrees_corrected'].to_dict()
+    angles_dict = angles_df.set_index('frame')['angle_degrees'].to_dict()
 
     for frame_number, image_file in frame_numbers:
         try:
@@ -928,7 +917,7 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
     out.release()
     print(f"Video saved to {output_path}")
 
-filename = get_random_unprocessed_video(head_segmentation_dir, final_data_dir)
+filename = get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_data_dir)
 head_segments = load_cleaned_segments_from_h5(filename)
 
 skeletons, skeleton_stats = process_all_frames(head_segments)
@@ -942,4 +931,30 @@ results_df = process_skeleton_batch(
     deviation_threshold=12
 )
 
-merged_df = save_head_angles_with_side_correction(filename, results_df, final_data_dir)
+merged_df = save_head_angles(filename, results_df, csv_input_dir, final_data_dir)
+
+# Create visualization video
+base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
+video_output_path = os.path.join(final_data_dir, f"{base_name}_headangle_visualization.mp4")
+
+# Check if corresponding image directory exists
+image_dir = os.path.join('2JPG', base_name)
+
+if image_dir and os.path.exists(image_dir):
+    print(f"Creating visualization video using images from: {image_dir}")
+    try:
+        create_layered_mask_video(
+            image_dir=image_dir,
+            bottom_masks_dict={},  # No bottom masks for this pipeline
+            top_masks_dict=head_segments,  # Use head segments as top masks
+            angles_df=merged_df,
+            output_path=video_output_path,
+            fps=10,
+            bottom_alpha=0.5,
+            top_alpha=0.7
+        )
+        print(f"Visualization video created: {video_output_path}")
+    except Exception as e:
+        print(f"Error creating visualization video: {str(e)}")
+else:
+    print(f"No image directory found for {base_name}. Checked: {image_dir}")

@@ -54,7 +54,7 @@ predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device
 
 # Define the two target objects used throughout
 OBJECTS = {1: 'nrD', 2: 'nrV'}
-CHUNK_SIZE = 201   # number of frames per chunk
+CHUNK_SIZE = 200   # Reduced from 201 to prevent memory issues
 OVERLAP = 1        # number of overlapping frames between consecutive chunks (for continuity)
 VIS_INTERVAL = 10  # visualize masks every N frames
 
@@ -68,7 +68,7 @@ output_dir = '5RIA_SEGMENT'
 # Remove the static output_video_path - will be generated dynamically
 # output_video_path = "mask_overlay.mp4"
 
-def interactive_collect_bboxes(image_path, object_ids=None, allow_skip=False):
+def interactive_collect_bboxes(image_path, object_ids=None):
     """
     Collect bounding box prompts on a single image interactively.
 
@@ -77,13 +77,11 @@ def interactive_collect_bboxes(image_path, object_ids=None, allow_skip=False):
     - Click and drag: draw bounding box for current object
     - u: undo last box for current object
     - c: clear current object's boxes
-    - s: skip (if allow_skip=True)
     - enter/q: finish and return
     - Use matplotlib toolbar for zoom/pan
 
     Returns:
         dict[int, np.ndarray] mapping obj_id -> bbox[4] (x1, y1, x2, y2)
-        Returns None if user chooses to skip (when allow_skip=True)
     """
     if object_ids is None:
         object_ids = tuple(sorted(OBJECTS.keys()))
@@ -99,7 +97,6 @@ def interactive_collect_bboxes(image_path, object_ids=None, allow_skip=False):
     # per-object storage
     storage = {oid: {"boxes": []} for oid in object_ids}
     current_obj = object_ids[0]
-    skip_video = False
     
     # Drawing state
     drawing = False
@@ -142,10 +139,9 @@ def interactive_collect_bboxes(image_path, object_ids=None, allow_skip=False):
             obj_lines.append(f"{oid}:{name}  boxes:{len(boxes)}")
         obj_list = ",  ".join(obj_lines)
         
-        skip_text = ", s=skip video" if allow_skip else ""
         ax.text(0.01, 0.99,
             f"Active={current_obj}:{OBJECTS.get(current_obj,'')} | Total boxes: {total}\n"
-            f"Keys: 1-2 select obj, click+drag=draw box, u=undo, c=clear{skip_text}, enter/q=finish\n"
+            f"Keys: 1-2 select obj, click+drag=draw box, u=undo, c=clear, enter/q=finish\n"
             f"Use toolbar above for zoom/pan. Objects: {obj_list}",
             transform=ax.transAxes, va='top', ha='left', color='white',
             bbox=dict(facecolor='black', alpha=0.7, edgecolor='none'))
@@ -222,7 +218,7 @@ def interactive_collect_bboxes(image_path, object_ids=None, allow_skip=False):
         start_point = None
 
     def on_key(event):
-        nonlocal current_obj, skip_video
+        nonlocal current_obj
         key = event.key
         if not key:
             return
@@ -242,10 +238,6 @@ def interactive_collect_bboxes(image_path, object_ids=None, allow_skip=False):
             storage[current_obj] = {"boxes": []}
             redraw()
             return
-        if key == 's' and allow_skip:
-            skip_video = True
-            plt.close(fig)
-            return
         if key in ('enter', 'return', 'q'):
             plt.close(fig)
             return
@@ -260,10 +252,6 @@ def interactive_collect_bboxes(image_path, object_ids=None, allow_skip=False):
     fig.canvas.mpl_disconnect(cid2)
     fig.canvas.mpl_disconnect(cid3)
     fig.canvas.mpl_disconnect(cid4)
-
-    # Return None if user chose to skip
-    if skip_video:
-        return None
 
     # convert to numpy arrays and return the most recent box for each object
     out = {}
@@ -398,7 +386,7 @@ def check_distance(mask1, mask2, max_distance=10):
 
 def check_mask_quality(video_segments, frame_idx, confidence_scores=None):
     """
-    Check if masks meet confidence quality threshold and size requirements.
+    Check if masks meet confidence quality threshold.
     
     Args:
         video_segments (dict): Current video segments
@@ -425,27 +413,6 @@ def check_mask_quality(video_segments, frame_idx, confidence_scores=None):
     
     if missing_objects:
         quality_report["issues"].append(f"Missing objects: {missing_objects}")
-    
-    # Check mask sizes (must be between 10 and 200 pixels)
-    undersized_masks = []
-    oversized_masks = []
-    for obj_id in OBJECTS.keys():
-        if obj_id in video_segments[frame_idx] and video_segments[frame_idx][obj_id] is not None:
-            mask = video_segments[frame_idx][obj_id]
-            mask_size = np.sum(mask > 0.5) if isinstance(mask, np.ndarray) else torch.sum(mask > 0.5).item()
-            
-            if mask_size < 10:
-                undersized_masks.append(obj_id)
-                needs_reprompt = True
-            elif mask_size > 500:
-                oversized_masks.append(obj_id)
-                needs_reprompt = True
-    
-    if undersized_masks:
-        quality_report["issues"].append(f"Undersized masks (< 10 pixels): {undersized_masks}")
-    
-    if oversized_masks:
-        quality_report["issues"].append(f"Oversized masks (> 500 pixels): {oversized_masks}")
     
     # Check confidence scores if provided
     low_confidence = []
@@ -1231,16 +1198,41 @@ active_predictor = predictor  # keep GPU/MPS
 i = 0
 chunk_id = 0
 prev_last_frame_idx = None
-video_skipped = False  # Flag to track if video was skipped
-
 while i < len(all_indices):
     # Determine chunk range with overlap
     end_idx_exclusive = min(i + CHUNK_SIZE, len(all_indices))
-    # Include overlap with previous: start at i if first, else i - OVERLAP
-    start_i = i if chunk_id == 0 else max(i - OVERLAP, 0)
-    indices = all_indices[start_i:end_idx_exclusive]
+    
+    # For subsequent chunks, skip the overlap frame if it was already processed
+    if chunk_id > 0 and i > 0:
+        start_i = i  # Start from current position, no overlap to avoid duplicates
+        indices = all_indices[start_i:end_idx_exclusive]
+    else:
+        # First chunk processes from the beginning
+        indices = all_indices[i:end_idx_exclusive]
+    
     chunk_id += 1
+    
+    # Skip if no frames to process
+    if not indices:
+        break
+    
+    # Clean up previous chunk directory before creating new one
+    if chunk_id > 1:
+        prev_chunk_dir = os.path.join(chunk_root, f"chunk_{chunk_id-1:04d}")
+        if os.path.exists(prev_chunk_dir):
+            try:
+                shutil.rmtree(prev_chunk_dir)
+            except Exception as e:
+                print(f"Warning: Could not clean up previous chunk dir: {e}")
+    
     chunk_dir, local_to_global = create_chunk_dir(video_dir, indices, chunk_root, chunk_id)
+    
+    # Clear GPU cache before processing new chunk
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    print(f"Processing chunk {chunk_id} with {len(indices)} frames (global frames {indices[0]}-{indices[-1]})")
+    print(f"Progress: {indices[-1]}/{len(all_indices)} frames ({(indices[-1]/len(all_indices)*100):.1f}%)")
 
     # Initialize state for this chunk
     inference_state = active_predictor.init_state(video_path=chunk_dir)
@@ -1258,13 +1250,19 @@ while i < len(all_indices):
         print("- Click and drag to draw bounding box")
         print("- u=undo, c=clear current object, enter/q=finish")
         print("- Use toolbar above for zoom/pan")
+        print("- To skip this video, close the window without drawing any boxes")
         new_chunk_bboxes = interactive_collect_bboxes(seed_frame_path, object_ids=(1, 2))
         
-        # Check if user skipped the video at the very beginning
-        if new_chunk_bboxes is None:
-            print("User chose to skip this video at the beginning. Moving to next video...")
-            video_skipped = True
-            break  # Break out of chunk processing loop
+        # Check if user wants to skip this video (no bounding boxes provided)
+        if not new_chunk_bboxes:
+            print(f"No bounding boxes provided. Skipping video: {os.path.basename(video_dir)}")
+            # Cleanup chunk dirs before skipping
+            try:
+                if os.path.exists(chunk_root):
+                    shutil.rmtree(chunk_root)
+            except Exception:
+                pass
+            continue  # Skip to next video
     else:
         new_chunk_bboxes = None
 
@@ -1280,15 +1278,45 @@ while i < len(all_indices):
             )
     else:
         # Attempt auto-seeding from previously computed masks if available
-        if seed_global_idx in video_segments:
-            prev_masks = video_segments[seed_global_idx]
-            img_path = resolve_image_path(chunk_dir, seed_local_idx)
-            img = cv2.imread(img_path)
-            img_shape = img.shape if img is not None else (110, 110, 3)
-            auto_bboxes = build_bbox_from_existing_masks(prev_masks, img_shape) # type: ignore
-            if auto_bboxes:
-                for obj_id, bbox in sorted(auto_bboxes.items()):
-                    print(f"[chunk {chunk_id}] Auto-seeding obj {obj_id} with bbox from previous masks")
+        auto_seeded = False
+        
+        # Try to find the most recent frame with masks for auto-seeding
+        search_frames = sorted([f for f in video_segments.keys() if f < seed_global_idx], reverse=True)
+        
+        for search_frame in search_frames[:5]:  # Check last 5 frames with masks
+            if search_frame in video_segments and video_segments[search_frame]:
+                prev_masks = video_segments[search_frame]
+                img_path = resolve_image_path(chunk_dir, seed_local_idx)
+                img = cv2.imread(img_path)
+                img_shape = img.shape if img is not None else (110, 110, 3)
+                auto_bboxes = build_bbox_from_existing_masks(prev_masks, img_shape) # type: ignore
+                
+                if auto_bboxes:
+                    print(f"[chunk {chunk_id}] Auto-seeding from frame {search_frame} masks")
+                    for obj_id, bbox in sorted(auto_bboxes.items()):
+                        print(f"[chunk {chunk_id}] Auto-seeding obj {obj_id} with bbox from frame {search_frame}")
+                        active_predictor.add_new_points_or_box(
+                            inference_state=inference_state,
+                            frame_idx=seed_local_idx,
+                            obj_id=int(obj_id),
+                            box=bbox,
+                        )
+                    auto_seeded = True
+                    break
+        
+        if not auto_seeded:
+            print(f"[chunk {chunk_id}] No previous masks found for auto-seeding")
+            print("Please provide bounding boxes for this chunk:")
+            print("- Number keys 1..2 select object id (1:nrD, 2:nrV)")
+            print("- Click and drag to draw bounding box")
+            print("- u=undo, c=clear current object, enter/q=finish")
+            print("- Use toolbar above for zoom/pan")
+            
+            manual_bboxes = interactive_collect_bboxes(seed_frame_path, object_ids=(1, 2))
+            
+            if manual_bboxes:
+                for obj_id, bbox in sorted(manual_bboxes.items()):
+                    print(f"[chunk {chunk_id}] Manual seeding obj {obj_id} with bbox {bbox}")
                     active_predictor.add_new_points_or_box(
                         inference_state=inference_state,
                         frame_idx=seed_local_idx,
@@ -1296,105 +1324,115 @@ while i < len(all_indices):
                         box=bbox,
                     )
             else:
-                print(f"[chunk {chunk_id}] No bboxes derived from previous masks; proceeding without seeding")
-        else:
-            print(f"[chunk {chunk_id}] No previous masks to auto-seed; proceeding without seeding")
+                print(f"[chunk {chunk_id}] No bounding boxes provided. Skipping chunk.")
+                continue  # Skip to next chunk
 
     # Propagate within the chunk starting from the seed frame
     last_quality_check = seed_global_idx
+    restart_propagation = True
     
-    for out_local_idx, out_obj_ids, out_mask_logits in active_predictor.propagate_in_video(
-            inference_state, start_frame_idx=seed_local_idx, reverse=False):
-        global_idx = local_to_global[out_local_idx]
-        # Skip duplicate overlapped first frame in subsequent chunks
-        if chunk_id > 1 and out_local_idx == 0 and global_idx in video_segments:
-            continue
+    while restart_propagation:
+        restart_propagation = False
         
-        # Store masks and confidence scores
-        video_segments[global_idx] = {
-            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-            for i, out_obj_id in enumerate(out_obj_ids)
-        }
-        
-        # Calculate confidence scores
-        confidence_scores = {}
-        for i, out_obj_id in enumerate(out_obj_ids):
-            if isinstance(out_mask_logits[i], torch.Tensor):
-                probs = torch.sigmoid(out_mask_logits[i])
-                # Calculate confidence as mean probability of positive pixels
-                positive_mask = out_mask_logits[i] > 0.0
-                if torch.sum(positive_mask) > 0:
-                    confidence = torch.mean(probs[positive_mask]).item()
-                else:
-                    confidence = 0.0
-                confidence_scores[out_obj_id] = confidence
-
-        # Check quality periodically
-        if (global_idx - last_quality_check) >= QUALITY_CHECK_INTERVAL:
-            needs_reprompt, quality_report = check_mask_quality(video_segments, global_idx, confidence_scores)
+        for out_local_idx, out_obj_ids, out_mask_logits in active_predictor.propagate_in_video(
+                inference_state, start_frame_idx=seed_local_idx, reverse=False):
+            global_idx = local_to_global[out_local_idx]
+            # Skip duplicate overlapped first frame in subsequent chunks
+            if chunk_id > 1 and out_local_idx == 0 and global_idx in video_segments:
+                continue
             
-            if needs_reprompt:
-                print(f"\n!!! Quality check failed at frame {global_idx} !!!")
-                print(f"Issues: {', '.join(quality_report['issues'])}")
-                print("Re-prompting user...")
+            # Store masks and confidence scores
+            video_segments[global_idx] = {
+                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                for i, out_obj_id in enumerate(out_obj_ids)
+            }
+            
+            # Calculate confidence scores
+            confidence_scores = {}
+            for i, out_obj_id in enumerate(out_obj_ids):
+                if isinstance(out_mask_logits[i], torch.Tensor):
+                    probs = torch.sigmoid(out_mask_logits[i])
+                    # Calculate confidence as mean probability of positive pixels
+                    positive_mask = out_mask_logits[i] > 0.0
+                    if torch.sum(positive_mask) > 0:
+                        confidence = torch.mean(probs[positive_mask]).item()
+                    else:
+                        confidence = 0.0
+                    confidence_scores[out_obj_id] = confidence
+
+            # Check quality periodically
+            if (global_idx - last_quality_check) >= QUALITY_CHECK_INTERVAL:
+                needs_reprompt, quality_report = check_mask_quality(video_segments, global_idx, confidence_scores)
                 
-                # Re-prompt user on current frame
-                current_frame_path = os.path.join(video_dir, f"{global_idx:06d}.jpg")
-                print("Please draw new bounding boxes to improve tracking quality.")
-                print("- Number keys 1..2 select object id (1:nrD, 2:nrV)")
-                print("- Click and drag to draw bounding box")
-                print("- u=undo, c=clear current object, s=skip video, enter/q=finish")
-                print("- Use toolbar above for zoom/pan")
-                
-                new_bboxes = interactive_collect_bboxes(current_frame_path, object_ids=(1, 2), allow_skip=True)
-                
-                if new_bboxes is None:
-                    print("User chose to skip this video. Moving to next video...")
-                    video_skipped = True
-                    break  # Break out of the propagation loop to skip to next video
-                elif new_bboxes:
-                    # Convert global frame index to local frame index for this chunk
-                    local_frame_idx = out_local_idx
+                if needs_reprompt:
+                    print(f"\n!!! Quality check failed at frame {global_idx} !!!")
+                    print(f"Issues: {', '.join(quality_report['issues'])}")
+                    print("Re-prompting user...")
                     
-                    # Add new bounding boxes to the current frame
-                    for obj_id, bbox in sorted(new_bboxes.items()):
-                        print(f"Adding correction bbox for obj {obj_id} at frame {global_idx}")
-                        active_predictor.add_new_points_or_box(
-                            inference_state=inference_state,
-                            frame_idx=local_frame_idx,
-                            obj_id=int(obj_id),
-                            box=bbox,
-                        )
+                    # Re-prompt user on current frame
+                    current_frame_path = os.path.join(video_dir, f"{global_idx:06d}.jpg")
+                    print("Please draw new bounding boxes to improve tracking quality.")
+                    print("- Number keys 1..2 select object id (1:nrD, 2:nrV)")
+                    print("- Click and drag to draw bounding box")
+                    print("- u=undo, c=clear current object, enter/q=finish")
+                    print("- Use toolbar above for zoom/pan")
                     
-                    print("Bounding boxes added. Continuing propagation...")
-                else:
-                    print("No new bounding boxes provided. Continuing with current tracking...")
-                
-                last_quality_check = global_idx
-            else:
-                print(f"[quality] Frame {global_idx}: {quality_report['status']}")
-                if global_idx - last_quality_check >= QUALITY_CHECK_INTERVAL:
+                    new_bboxes = interactive_collect_bboxes(current_frame_path, object_ids=(1, 2))
+                    
+                    if new_bboxes:
+                        # Convert global frame index to local frame index for this chunk
+                        local_frame_idx = out_local_idx
+                        
+                        # Reset the inference state to replace existing tracking
+                        print(f"Resetting tracking state and replacing with new bounding boxes at frame {global_idx}")
+                        inference_state = active_predictor.init_state(video_path=chunk_dir)
+                        
+                        # Add new bounding boxes to replace the existing tracking
+                        for obj_id, bbox in sorted(new_bboxes.items()):
+                            print(f"Replacing tracking with new bbox for obj {obj_id} at frame {global_idx}")
+                            active_predictor.add_new_points_or_box(
+                                inference_state=inference_state,
+                                frame_idx=local_frame_idx,
+                                obj_id=int(obj_id),
+                                box=bbox,
+                            )
+                        
+                        print("Tracking state reset and new bounding boxes added. Restarting propagation...")
+                        
+                        # Update seed frame to current frame and restart propagation
+                        seed_local_idx = local_frame_idx
+                        restart_propagation = True
+                        break
+                    else:
+                        print("No new bounding boxes provided. Continuing with current tracking...")
+                    
                     last_quality_check = global_idx
+                else:
+                    print(f"[quality] Frame {global_idx}: {quality_report['status']}")
+                    if global_idx - last_quality_check >= QUALITY_CHECK_INTERVAL:
+                        last_quality_check = global_idx
 
-        # Periodic visualization every VIS_INTERVAL frames (relative to first frame)
-        if ((global_idx - first_frame_idx) % VIS_INTERVAL) == 0:
-            try:
-                overlay_predictions_on_frame(video_dir, global_idx, video_segments, alpha=0.6)
-                print(f"[viz] Saved overlay for frame {global_idx:06d}")
-                
-                # Show confidence scores in visualization
-                if confidence_scores:
-                    conf_str = ", ".join([f"obj{oid}:{conf:.2f}" for oid, conf in confidence_scores.items()])
-                    print(f"[confidence] {conf_str}")
+            # Periodic visualization every VIS_INTERVAL frames (relative to first frame)
+            if ((global_idx - first_frame_idx) % VIS_INTERVAL) == 0:
+                try:
+                    overlay_predictions_on_frame(video_dir, global_idx, video_segments, alpha=0.6)
+                    print(f"[viz] Saved overlay for frame {global_idx:06d}")
                     
-            except Exception as e:
-                print(f"[viz] Failed to save overlay for frame {global_idx}: {e}")
-
-    # If video was skipped during quality check, break out of chunk loop
-    if video_skipped:
-        break
+                    # Show confidence scores in visualization
+                    if confidence_scores:
+                        conf_str = ", ".join([f"obj{oid}:{conf:.2f}" for oid, conf in confidence_scores.items()])
+                        print(f"[confidence] {conf_str}")
+                        
+                except Exception as e:
+                    print(f"[viz] Failed to save overlay for frame {global_idx}: {e}")
 
     prev_last_frame_idx = indices[-1]
+    
+    # Clear inference state to free GPU memory
+    del inference_state
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
     # Advance to next non-overlapping position
     i = end_idx_exclusive
 

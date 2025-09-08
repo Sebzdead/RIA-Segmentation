@@ -28,7 +28,7 @@ jpg_video_dir = '2JPG'
 head_segmentation_dir = '7HEAD_SEGMENT'
 
 # Add quality thresholds and processing constants
-CONFIDENCE_THRESHOLD = 0.9  # minimum confidence score (0-1)
+CONFIDENCE_THRESHOLD = 0.92  # minimum confidence score (0-1)
 QUALITY_CHECK_INTERVAL = 50  # check quality every 50 frames
 VIS_INTERVAL = 50       # visualize masks every 50 frames
 CHUNK_SIZE = 300   # number of frames per chunk
