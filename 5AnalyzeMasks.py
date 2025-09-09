@@ -5,6 +5,8 @@ from tqdm import tqdm
 import random
 import pandas as pd
 from scipy.ndimage import distance_transform_edt
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
 # Directory paths for input segments, output analysis data, and video frames
 segments_dir = '5RIA_SEGMENT'
@@ -185,41 +187,52 @@ def get_background_sample(frame_masks, image_shape, num_samples=100, min_distanc
         sampled_indices = random.sample(range(len(valid_coords)), num_samples)
         return valid_coords[sampled_indices]
 
-def load_image(frame_idx, tiff_stack=None):
+def load_image(frame_idx, tiff_stack=None, filename=None):
     """
     Load a single frame from a TIFF stack corresponding to the currently selected video.
     
     Args:
-        frame_idx (int): Index of the frame to load
+        frame_idx (int): Index of the frame to load (mask frame index)
         tiff_stack (np.ndarray, optional): Pre-loaded TIFF stack array
+        filename (str, optional): Path to H5 file for fallback loading
         
     Returns:
         np.ndarray: Grayscale image array, or None if loading fails
         
     Note:
-        Uses global variable 'filename' to determine video basename and loads from TIFF stack
+        Handles potential index offset between mask indices and TIFF indices
     """
     if tiff_stack is not None:
-        if frame_idx < len(tiff_stack):
-            return tiff_stack[frame_idx]
-        else:
-            print(f"Warning: Frame {frame_idx} is out of bounds for TIFF stack")
-            return None
+        # Try different indexing schemes to handle offset
+        possible_indices = [frame_idx, frame_idx - 1, 0 if frame_idx == 1 else frame_idx]
+        
+        for tiff_idx in possible_indices:
+            if 0 <= tiff_idx < len(tiff_stack):
+                return tiff_stack[tiff_idx]
+        
+        print(f"Warning: Frame {frame_idx} is out of bounds for TIFF stack")
+        return None
     
-    # Extract base filename from h5 file and find corresponding tiff stack
+    # Fallback to loading individual frame
+    if filename is None:
+        print("Warning: No filename provided for fallback loading")
+        return None
+        
     h5_basename = os.path.splitext(os.path.basename(filename))[0]
-    
     tiff_path = os.path.join(video_dir, h5_basename + ".tif")
     
     try:
-        # Load the entire TIFF stack
         import tifffile
         tiff_stack = tifffile.imread(tiff_path)
-        if frame_idx < len(tiff_stack):
-            return tiff_stack[frame_idx]
-        else:
-            print(f"Warning: Frame {frame_idx} is out of bounds for TIFF stack")
-            return None
+        # Try the same indexing logic
+        possible_indices = [frame_idx, frame_idx - 1, 0 if frame_idx == 1 else frame_idx]
+        
+        for tiff_idx in possible_indices:
+            if 0 <= tiff_idx < len(tiff_stack):
+                return tiff_stack[tiff_idx]
+        
+        print(f"Warning: Frame {frame_idx} is out of bounds for TIFF stack")
+        return None
     except Exception as e:
         print(f"Error loading TIFF stack {tiff_path}: {e}")
         return None
@@ -391,12 +404,13 @@ def create_wide_format_table_with_bg_correction_and_pixel_count(mean_values, pix
     
     return df
 
-def process_cleaned_segments(cleaned_segments):
+def process_cleaned_segments(cleaned_segments, filename):
     """
     Process all frames in cleaned segments to extract brightness and pixel count data.
     
     Args:
         cleaned_segments (dict): Dictionary of cleaned segment masks by frame
+        filename (str): Path to the HDF5 file
         
     Returns:
         pd.DataFrame: Wide-format table with brightness measurements and statistics
@@ -426,7 +440,7 @@ def process_cleaned_segments(cleaned_segments):
 
     for frame_idx, frame_masks in tqdm(cleaned_segments.items(), desc="Processing frames"):
         bg_coordinates = get_background_sample(frame_masks, image_shape)
-        image = load_image(frame_idx, tiff_stack)
+        image = load_image(frame_idx, tiff_stack, filename)
         
         if image is None:
             print(f"Warning: Could not load image for frame {frame_idx}")
@@ -636,6 +650,125 @@ def load_and_verify_alignment(filename, cleaned_segments):
         print(f"Error loading/verifying TIFF: {e}")
         return None, None
 
+def debug_frame_alignment(filename, cleaned_segments, tiff_stack):
+    """
+    Debug the alignment between mask frame indices and TIFF stack indices.
+    
+    Args:
+        filename (str): Path to the HDF5 file
+        cleaned_segments (dict): Dictionary of cleaned segment masks
+        tiff_stack (np.ndarray): TIFF image stack
+    """
+    print(f"\n--- DEBUG: Frame alignment for {os.path.basename(filename)} ---")
+    print(f"TIFF stack shape: {tiff_stack.shape}")
+    print(f"Number of frames in TIFF: {len(tiff_stack)}")
+    print(f"Mask frame indices: {sorted(cleaned_segments.keys())}")
+    print(f"Min mask frame index: {min(cleaned_segments.keys())}")
+    print(f"Max mask frame index: {max(cleaned_segments.keys())}")
+    print(f"Number of mask frames: {len(cleaned_segments)}")
+    
+    # Check if mask indices are 0-based or 1-based
+    mask_indices = sorted(cleaned_segments.keys())
+    if 0 in mask_indices:
+        print("Masks appear to use 0-based indexing")
+    elif 1 in mask_indices:
+        print("Masks appear to use 1-based indexing")
+    
+    # Test different offset scenarios
+    test_indices = [0, 1, 2] if len(mask_indices) >= 3 else mask_indices[:2]
+    
+    for mask_idx in test_indices:
+        if mask_idx in cleaned_segments:
+            print(f"\nTesting mask frame {mask_idx}:")
+            # Try direct indexing
+            if mask_idx < len(tiff_stack):
+                print(f"  TIFF[{mask_idx}] shape: {tiff_stack[mask_idx].shape}")
+            # Try offset indexing
+            if mask_idx > 0 and mask_idx - 1 < len(tiff_stack):
+                print(f"  TIFF[{mask_idx-1}] shape: {tiff_stack[mask_idx-1].shape}")
+
+def visualize_first_frame_with_masks(filename, cleaned_segments, tiff_stack):
+    """
+    Visualize the first frame with masks overlaid.
+    
+    Args:
+        filename (str): Path to the HDF5 file
+        cleaned_segments (dict): Dictionary of cleaned segment masks
+        tiff_stack (np.ndarray): TIFF image stack
+    """
+    if not cleaned_segments or tiff_stack is None:
+        print("Cannot visualize: missing data")
+        return
+    
+    # Debug frame alignment first
+    debug_frame_alignment(filename, cleaned_segments, tiff_stack)
+    
+    # Get first frame data
+    first_mask_idx = min(cleaned_segments.keys())
+    first_frame_masks = cleaned_segments[first_mask_idx]
+    
+    # Try to determine correct TIFF index
+    # Check if masks use 1-based indexing while TIFF uses 0-based
+    possible_tiff_indices = [first_mask_idx, first_mask_idx - 1, 0]
+    
+    first_image = None
+    used_tiff_idx = None
+    
+    for tiff_idx in possible_tiff_indices:
+        if 0 <= tiff_idx < len(tiff_stack):
+            first_image = tiff_stack[tiff_idx]
+            used_tiff_idx = tiff_idx
+            print(f"Using TIFF frame {tiff_idx} for mask frame {first_mask_idx}")
+            break
+    
+    if first_image is None:
+        print("Cannot find corresponding TIFF frame")
+        return
+    
+    # Create figure
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Display original image
+    ax1.imshow(first_image, cmap='gray')
+    ax1.set_title('Original First Frame')
+    ax1.axis('off')
+    
+    # Display image with mask overlays
+    ax2.imshow(first_image, cmap='gray')
+    
+    # Generate distinct colors for each object
+    colors = plt.cm.Set1(np.linspace(0, 1, len(first_frame_masks)))
+    
+    for i, (obj_id, mask) in enumerate(first_frame_masks.items()):
+        mask_2d = mask.squeeze()
+        
+        # Create colored overlay
+        overlay = np.zeros((*mask_2d.shape, 4))
+        overlay[mask_2d, :3] = colors[i][:3]
+        overlay[mask_2d, 3] = 0.4  # Alpha for transparency
+        
+        ax2.imshow(overlay)
+        
+        # Add object ID label at centroid
+        centroid = get_centroid(mask)
+        if centroid:
+            ax2.text(centroid[0], centroid[1], str(obj_id), 
+                    color='white', fontsize=12, fontweight='bold',
+                    ha='center', va='center',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor=colors[i], alpha=0.7))
+    
+    ax2.set_title(f'First Frame with Masks (Mask Frame {first_mask_idx}, TIFF Frame {used_tiff_idx})')
+    ax2.axis('off')
+    
+    # Save visualization
+    h5_basename = os.path.splitext(os.path.basename(filename))[0]
+    viz_filename = os.path.join(final_data_dir, f"{h5_basename}_first_frame_visualization.png")
+    plt.tight_layout()
+    plt.savefig(viz_filename, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"First frame visualization saved: {viz_filename}")
+
 # Main execution - process all unprocessed videos
 unprocessed_files = get_all_unprocessed_videos(segments_dir, final_data_dir)
 
@@ -659,8 +792,11 @@ else:
                 print(f"SKIPPING {os.path.basename(filename)}: Mask alignment issues detected.")
                 continue
             
+            # Visualize first frame with masks
+            visualize_first_frame_with_masks(filename, cleaned_segments, tiff_stack)
+            
             # Process the video
-            df_wide_brightness_and_background = process_cleaned_segments(cleaned_segments)
+            df_wide_brightness_and_background = process_cleaned_segments(cleaned_segments, filename)
             
             # Save results
             df_wide_brightness_and_side = save_brightness_and_side_data(

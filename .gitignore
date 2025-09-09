@@ -1,3 +1,4 @@
+/.vscode
 /1TIFF
 /2JPG
 /3CROP
@@ -5,6 +6,7 @@
 /5RIA_SEGMENT
 /6ANALYSIS
 /7HEAD_SEGMENT
+/7VISUALIZATIONS
 /8HEAD_ANGLE
 /frame_prediction_overlay.png
 ria_prompt.png

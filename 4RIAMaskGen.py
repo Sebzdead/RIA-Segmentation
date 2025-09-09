@@ -48,8 +48,8 @@ else:
 print(f"using device: {device}")
 
 from sam2.build_sam import build_sam2_video_predictor # type: ignore
-sam2_checkpoint = r"c:\Users\switte3\Documents\sam2\checkpoints\sam2.1_hiera_base_plus.pt"
-model_cfg = r"c:\Users\switte3\Documents\sam2\sam2\configs\sam2.1\sam2.1_hiera_b+.yaml"
+sam2_checkpoint = r"c:\Users\User\Documents\sam2\checkpoints\sam2.1_hiera_base_plus.pt"
+model_cfg = r"c:\Users\User\Documents\sam2\sam2\configs\sam2.1\sam2.1_hiera_b+.yaml"
 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
 
 # Define the two target objects used throughout
@@ -975,7 +975,7 @@ def save_video_segments_to_h5(video_segments, video_dir, output_dir, frame_mappi
                              dtype=bool,
                              compression="gzip")
         
-        for i, (frame_idx, objects) in enumerate(sorted(filtered_video_segments.items(), reverse=True)):
+        for i, (frame_idx, objects) in enumerate(sorted(filtered_video_segments.items(), reverse=False)):
             for obj_id, mask in objects.items():
                 obj_id_str = str(obj_id) if obj_id is not None else 'None'
                 f[f'masks/{obj_id_str}'][i] = mask
