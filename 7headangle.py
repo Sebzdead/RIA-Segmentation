@@ -55,7 +55,52 @@ def get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_dat
     return os.path.join(head_segmentation_dir, random.choice(processable_videos))
 
 def get_skeleton(mask):
-    return morphology.skeletonize(mask)
+    # Ensure mask is 2D boolean array
+    if mask.ndim > 2:
+        mask = mask.squeeze()
+    mask = mask.astype(bool)
+    
+    # Check if mask has any True pixels before processing
+    if not np.any(mask):
+        print("Warning: Input mask is empty")
+        return mask  # Return empty mask if input is empty
+    
+    original_pixel_count = np.sum(mask)
+    # print(f"Original mask pixels: {original_pixel_count}")
+    
+    # Apply smoothing
+    kernel_tiny = morphology.disk(2)
+    
+    # Only apply closing if the mask is sparse (has disconnected components)
+    # Check connectivity first
+    labeled_mask = morphology.label(mask)
+    num_components = np.max(labeled_mask)
+    
+    if num_components > 1:
+        # Only smooth if there are disconnected components
+        smoothed_mask = morphology.binary_closing(mask, kernel_tiny)
+        after_closing = np.sum(smoothed_mask)
+        print(f"After closing: {after_closing} pixels (was {original_pixel_count})")
+    else:
+        # Skip smoothing if mask is already connected
+        smoothed_mask = mask.copy()
+        # print("Skipping morphological operations - mask already connected")
+    
+    # Final safety check before skeletonization
+    if not np.any(smoothed_mask):
+        print("Warning: Using original mask for skeletonization")
+        smoothed_mask = mask
+    
+    skeleton = morphology.skeletonize(smoothed_mask)
+    skeleton_pixels = np.sum(skeleton)
+    # print(f"Skeleton pixels: {skeleton_pixels}")
+    
+    if skeleton_pixels == 0:
+        print("ERROR: Skeleton is empty! Using original mask for skeletonization")
+        skeleton = morphology.skeletonize(mask)
+        print(f"Skeleton from original mask: {np.sum(skeleton)} pixels")
+    
+    return skeleton
 
 def process_all_frames(head_segments):
     """
@@ -97,7 +142,7 @@ def process_all_frames(head_segments):
 
 def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150):
     """
-    Keeps only the top specified number of pixels of skeletons.
+    Keeps only the bottom specified number of pixels of skeletons.
     """
     truncated_skeletons = {}
     
@@ -105,7 +150,11 @@ def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150):
         frame_truncated = {}
         
         for obj_id, skeleton in frame_data.items():
-            skeleton_2d = skeleton[0]
+            # Handle both 2D and 3D skeleton formats
+            if skeleton.ndim == 3:
+                skeleton_2d = skeleton[0]
+            else:
+                skeleton_2d = skeleton
             
             points = np.where(skeleton_2d)
             if len(points[0]) == 0:
@@ -116,18 +165,33 @@ def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150):
             y_max = np.max(points[0])
             original_height = y_max - y_min
             
-            cutoff_point = y_min + keep_pixels + 1
+            # Keep bottom pixels instead of top pixels
+            cutoff_point = y_max - keep_pixels - 1
             
-            truncated = skeleton.copy()
-            truncated[0, cutoff_point:, :] = False
+            # Create truncated skeleton with same format as input
+            if skeleton.ndim == 3:
+                truncated = skeleton.copy()
+                truncated[0, :cutoff_point, :] = False  # Remove top portion
+            else:
+                truncated = skeleton.copy()
+                truncated[:cutoff_point, :] = False  # Remove top portion
             
-            new_points = np.where(truncated[0])
-            new_height = np.max(new_points[0]) - np.min(new_points[0])
+            # Check result
+            if skeleton.ndim == 3:
+                new_points = np.where(truncated[0])
+            else:
+                new_points = np.where(truncated)
+                
+            if len(new_points[0]) > 0:
+                new_height = np.max(new_points[0]) - np.min(new_points[0])
+            else:
+                new_height = 0
             
             print(f"Frame {frame_idx}, Object {obj_id}:")
+            print(f"Skeleton format: {skeleton.shape}")
             print(f"Original height: {original_height}")
             print(f"New height: {new_height}")
-            print(f"Top point: {y_min}")
+            print(f"Bottom point: {y_max}")
             print(f"Cutoff point: {cutoff_point}")
             print("------------------------")            
             frame_truncated[obj_id] = truncated            
@@ -351,7 +415,11 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
             angle_rad = np.arccos(cos_angle)
             angle_deg = np.degrees(angle_rad)
             
-            cross_product = np.cross(body_vector, head_vector)
+            # Calculate cross product for 2D vectors to determine sign
+            # Convert to 3D to avoid deprecation warning
+            head_3d = np.append(head_vector, 0)
+            body_3d = np.append(body_vector, 0)
+            cross_product = np.cross(body_3d, head_3d)[2]  # Take z-component
             if cross_product < 0:
                 angle_deg = -angle_deg
             
@@ -454,7 +522,12 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
         frame_results[frame_idx] = {}
         
         for obj_id, skeleton_data in frame_data.items():
-            skeleton = skeleton_data[0]            
+            # Handle both 2D and 3D skeleton formats
+            if skeleton_data.ndim == 3:
+                skeleton = skeleton_data[0]
+            else:
+                skeleton = skeleton_data
+            
             result = calculate_head_angle_with_positions_and_bend(
                 skeleton,
                 prev_angle=None,
@@ -556,10 +629,22 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
                 'error': frame_results[frame_idx][obj_id].get('error', None)
             })
     
-    # Convert to DataFrame and apply head angle smoothing
+    # Convert to DataFrame and apply moving average smoothing first
     initial_df = pd.DataFrame(initial_data)
+    
+    # Apply moving average smoothing with window size of 5
+    moving_avg_df = initial_df.copy()
+    for obj_id in initial_df['object_id'].unique():
+        obj_mask = initial_df['object_id'] == obj_id
+        obj_angles = initial_df.loc[obj_mask, 'angle_degrees'].values
+        
+        # Apply moving average with window size 5
+        smoothed_angles = pd.Series(obj_angles).rolling(window=5, center=True, min_periods=1).mean().values
+        moving_avg_df.loc[obj_mask, 'angle_degrees'] = smoothed_angles
+    
+    # Then apply the existing noise peak smoothing
     smoothed_df = smooth_head_angles_with_validation(
-        initial_df,
+        moving_avg_df,
         id_column='object_id',
         angle_column='angle_degrees',
         window_size=smoothing_window,
@@ -574,7 +659,14 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
         prev_angle = None
         for _, row in obj_data.iterrows():
             frame_idx = row['frame']
-            skeleton = truncated_skeletons[frame_idx][obj_id][0]            
+            skeleton_data = truncated_skeletons[frame_idx][obj_id]
+            
+            # Handle both 2D and 3D skeleton formats
+            if skeleton_data.ndim == 3:
+                skeleton = skeleton_data[0]
+            else:
+                skeleton = skeleton_data
+                
             new_result = calculate_head_angle_with_positions_and_bend(
                 skeleton,
                 prev_angle=prev_angle,
@@ -750,7 +842,8 @@ def save_head_angles(filename, results_df, csv_input_dir, final_data_dir):
     return merged_df
 
 def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angles_df,
-                           output_path, fps=10, bottom_alpha=0.5, top_alpha=0.7):
+                           output_path, fps=10, bottom_alpha=0.5, top_alpha=0.7, 
+                           skeleton_dict=None):
     COLORS = [
         (255, 0, 0),    # Red
         (0, 255, 0),    # Green
@@ -802,6 +895,35 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
             
         top_idx = np.argmin(y_coords)
         return (y_coords[top_idx], x_coords[top_idx])
+
+    def add_skeleton_overlay(image, frame_skeletons, skeleton_colors):
+        """Add skeleton visualization on top of the image"""
+        overlay = image.copy()
+        
+        for skeleton_id, skeleton_data in frame_skeletons.items():
+            # Handle both 2D and 3D skeleton formats
+            if skeleton_data.ndim == 3:
+                skeleton = skeleton_data[0]
+            else:
+                skeleton = skeleton_data
+            
+            # Get skeleton points
+            y_coords, x_coords = np.where(skeleton)
+            if len(y_coords) == 0:
+                continue
+            
+            # Draw skeleton points as small circles
+            color = skeleton_colors[skeleton_id]
+            for y, x in zip(y_coords, x_coords):
+                # Scale coordinates to image size if needed
+                img_y = int(y * image.shape[0] / skeleton.shape[0]) if skeleton.shape[0] != image.shape[0] else y
+                img_x = int(x * image.shape[1] / skeleton.shape[1]) if skeleton.shape[1] != image.shape[1] else x
+                
+                # Ensure coordinates are within image bounds
+                if 0 <= img_y < image.shape[0] and 0 <= img_x < image.shape[1]:
+                    cv2.circle(overlay, (img_x, img_y), 1, color, -1)
+        
+        return overlay
 
     def add_angle_text(image, angle, position, font_scale=0.7):
         """Add angle text at the given position with background"""
@@ -869,6 +991,9 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
     top_mask_colors = {mask_id: top_colors[i % len(top_colors)] 
                       for i, mask_id in enumerate(top_mask_ids)}
 
+    # Create skeleton colors (brighter colors for visibility)
+    skeleton_colors = {mask_id: (255, 255, 0) for mask_id in top_mask_ids}  # Yellow for all skeletons
+
     angles_dict = angles_df.set_index('frame')['angle_degrees'].to_dict()
 
     for frame_number, image_file in frame_numbers:
@@ -904,6 +1029,10 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
                 if top_masks_dict[frame_number]:
                     first_mask_id = next(iter(top_masks_dict[frame_number]))
                     tip_position = find_skeleton_tip(top_masks_dict[frame_number][first_mask_id])
+            
+            # Add skeleton overlay if skeleton_dict is provided
+            if skeleton_dict is not None and frame_number in skeleton_dict:
+                final_frame = add_skeleton_overlay(final_frame, skeleton_dict[frame_number], skeleton_colors)
             
             if frame_number in angles_dict and tip_position is not None:
                 final_frame = add_angle_text(final_frame, angles_dict[frame_number], tip_position)
@@ -951,7 +1080,8 @@ if image_dir and os.path.exists(image_dir):
             output_path=video_output_path,
             fps=10,
             bottom_alpha=0.5,
-            top_alpha=0.7
+            top_alpha=0.7,
+            skeleton_dict=truncated_skeletons  # Pass skeleton data for visualization
         )
         print(f"Visualization video created: {video_output_path}")
     except Exception as e:
