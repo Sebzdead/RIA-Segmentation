@@ -65,40 +65,39 @@ def get_skeleton(mask):
         print("Warning: Input mask is empty")
         return mask  # Return empty mask if input is empty
     
-    original_pixel_count = np.sum(mask)
-    # print(f"Original mask pixels: {original_pixel_count}")
+    # --- Pre-smoothing pipeline ---
+    # 1) Fill small holes
+    area_threshold = 150  # small hole area threshold (pixels)
+    mask_filled = morphology.remove_small_holes(mask, area_threshold=area_threshold)
     
-    # Apply smoothing
-    kernel_tiny = morphology.disk(2)
+    # 2) Closing then opening with an elliptical kernel (more aggressive radius)
+    kernel_radius = 6
+    ksize = 2 * kernel_radius + 1
+    ell_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+    # OpenCV expects uint8 mask with values 0/1
+    mask_u8 = mask_filled.astype(np.uint8)
+    closed = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, ell_kernel)
+    opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, ell_kernel)
+    morph_smoothed = opened.astype(bool)
     
-    # Only apply closing if the mask is sparse (has disconnected components)
-    # Check connectivity first
-    labeled_mask = morphology.label(mask)
-    num_components = np.max(labeled_mask)
-    
-    if num_components > 1:
-        # Only smooth if there are disconnected components
-        smoothed_mask = morphology.binary_closing(mask, kernel_tiny)
-        after_closing = np.sum(smoothed_mask)
-        print(f"After closing: {after_closing} pixels (was {original_pixel_count})")
-    else:
-        # Skip smoothing if mask is already connected
-        smoothed_mask = mask.copy()
-        # print("Skipping morphological operations - mask already connected")
+    # 3) Gaussian blur on float mask and re-threshold back to bool
+    float_mask = morph_smoothed.astype(np.float32)
+    gaussian_sigma = 1.5
+    blurred = ndimage.gaussian_filter(float_mask, sigma=gaussian_sigma)
+    smoothed_mask = blurred >= 0.5
+    # --- End pre-smoothing pipeline ---
     
     # Final safety check before skeletonization
     if not np.any(smoothed_mask):
         print("Warning: Using original mask for skeletonization")
         smoothed_mask = mask
     
-    skeleton = morphology.skeletonize(smoothed_mask)
-    skeleton_pixels = np.sum(skeleton)
-    # print(f"Skeleton pixels: {skeleton_pixels}")
+    # Use medial-axis skeletonization
+    skeleton = morphology.medial_axis(smoothed_mask)
     
-    if skeleton_pixels == 0:
+    if np.sum(skeleton) == 0:
         print("ERROR: Skeleton is empty! Using original mask for skeletonization")
-        skeleton = morphology.skeletonize(mask)
-        print(f"Skeleton from original mask: {np.sum(skeleton)} pixels")
+        skeleton = morphology.medial_axis(mask)
     
     return skeleton
 
@@ -1009,7 +1008,7 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
                 print(f"Bottom masks available: {frame_number in bottom_masks_dict}")
                 print(f"Top masks available: {frame_number in top_masks_dict}")
             
-            final_frame = frame.copy()
+            final_frame = frame.copy();
             
             if frame_number in bottom_masks_dict:
                 bottom_overlay = create_mask_overlay(frame, 
