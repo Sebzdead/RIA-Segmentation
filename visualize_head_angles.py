@@ -70,7 +70,7 @@ def create_visualization(csv_path, output_dir):
         # Plot all three normalized signals on the same Y-axis
         # Plot head angle first (in background) with gray color and high opacity
         line3 = ax.plot(df['frame'], normalized_angles, color='#666666', linewidth=2.5, 
-                       label='Head Angle (flipped)', alpha=0.7, zorder=1)
+                       label='Head Angle (Positive = No odour)', alpha=0.7, zorder=1)
         line1 = ax.plot(df['frame'], normalized_nrd, color='#dc3545', linewidth=2, 
                        label='nrD', alpha=0.9, zorder=3)
         line2 = ax.plot(df['frame'], normalized_nrv, color='#0d6efd', linewidth=2, 
@@ -121,7 +121,7 @@ def main():
     """
     # Set up directories
     head_angle_dir = "8HEAD_ANGLE"
-    visualization_dir = "8HEAD_ANGLE_VISUALIZATIONS"
+    visualization_dir = "8HEAD_ANGLE"
     
     # Create output directory if it doesn't exist
     os.makedirs(visualization_dir, exist_ok=True)
