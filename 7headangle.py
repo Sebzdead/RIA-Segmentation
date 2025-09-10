@@ -36,7 +36,7 @@ def load_cleaned_segments_from_h5(filename):
     print(f"Cleaned segments loaded from {filename}")
     return cleaned_segments
 
-def get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_data_dir):
+def get_all_unprocessed_videos(head_segmentation_dir, csv_input_dir, final_data_dir):
     all_videos = [f for f in os.listdir(head_segmentation_dir) if f.endswith("_headsegmentation.h5")]
     
     processable_videos = []
@@ -47,12 +47,12 @@ def get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_dat
         
         if os.path.exists(os.path.join(csv_input_dir, input_csv_name)) and \
            not os.path.exists(os.path.join(final_data_dir, output_csv_name)):
-            processable_videos.append(video)
+            processable_videos.append(os.path.join(head_segmentation_dir, video))
     
     if not processable_videos:
         raise ValueError("No videos found that need head angle processing.")
     
-    return os.path.join(head_segmentation_dir, random.choice(processable_videos))
+    return processable_videos
 
 def preprocess_mask(mask):
     """
@@ -739,39 +739,51 @@ def create_visualization_video(image_dir, head_segments, skeletons, smoothed_mas
 
 # Main execution
 if __name__ == "__main__":
-    filename = get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_data_dir)
-    print(f"Processing: {filename}")
+    # Get all unprocessed videos
+    unprocessed_videos = get_all_unprocessed_videos(head_segmentation_dir, csv_input_dir, final_data_dir)
+    print(f"Found {len(unprocessed_videos)} videos to process")
     
-    head_segments = load_cleaned_segments_from_h5(filename)
-    
-    skeletons, smoothed_masks, skeleton_stats = process_all_frames_alternative(head_segments)
-    
-    results_df = process_skeleton_batch_alternative(skeletons, min_skeleton_length=20)
-    
-    merged_df = save_head_angles(filename, results_df, csv_input_dir, final_data_dir)
-    
-    # Create visualization video
-    base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
-    video_output_path = os.path.join(final_data_dir, f"{base_name}_headangle_visualization.mp4")
-    
-    image_dir = os.path.join('2JPG', base_name)
-    
-    if os.path.exists(image_dir):
-        print(f"Creating visualization video using images from: {image_dir}")
+    for i, filename in enumerate(unprocessed_videos, 1):
+        print(f"\nProcessing video {i}/{len(unprocessed_videos)}: {filename}")
+        
         try:
-            create_visualization_video(
-                image_dir=image_dir,
-                head_segments=head_segments,
-                skeletons=skeletons,
-                smoothed_masks=smoothed_masks,
-                angles_df=merged_df,
-                output_path=video_output_path,
-                fps=10
-            )
-            print(f"Visualization video created: {video_output_path}")
+            head_segments = load_cleaned_segments_from_h5(filename)
+            
+            skeletons, smoothed_masks, skeleton_stats = process_all_frames_alternative(head_segments)
+            
+            results_df = process_skeleton_batch_alternative(skeletons, min_skeleton_length=20)
+            
+            merged_df = save_head_angles(filename, results_df, csv_input_dir, final_data_dir)
+            
+            # Create visualization video
+            base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
+            video_output_path = os.path.join(final_data_dir, f"{base_name}_headangle_visualization.mp4")
+            
+            image_dir = os.path.join('2JPG', base_name)
+            
+            if os.path.exists(image_dir):
+                print(f"Creating visualization video using images from: {image_dir}")
+                try:
+                    create_visualization_video(
+                        image_dir=image_dir,
+                        head_segments=head_segments,
+                        skeletons=skeletons,
+                        smoothed_masks=smoothed_masks,
+                        angles_df=merged_df,
+                        output_path=video_output_path,
+                        fps=10
+                    )
+                    print(f"Visualization video created: {video_output_path}")
+                except Exception as e:
+                    print(f"Error creating visualization video: {str(e)}")
+            else:
+                print(f"No image directory found for {base_name}. Checked: {image_dir}")
+            
+            print(f"Successfully completed processing video {i}/{len(unprocessed_videos)}")
+            
         except Exception as e:
-            print(f"Error creating visualization video: {str(e)}")
-    else:
-        print(f"No image directory found for {base_name}. Checked: {image_dir}")
+            print(f"Error processing video {filename}: {str(e)}")
+            print("Continuing to next video...")
+            continue
     
-    print("Processing completed successfully!")
+    print(f"\nCompleted processing all {len(unprocessed_videos)} videos!")
