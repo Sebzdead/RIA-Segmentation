@@ -1,5 +1,6 @@
 """
-This script extracts head angles from head segmentation masks and has visualization helper functions.
+Alternative head angle extraction script with improved skeletonization and angle calculation.
+Uses medial-axis skeletonization and calculates angles based on three-point method.
 """
 import os
 import numpy as np
@@ -8,9 +9,9 @@ from skimage import morphology
 from scipy import ndimage
 import pandas as pd
 import random
-import numpy.linalg as la
 import re
 import cv2
+from collections import deque, defaultdict
 
 head_segmentation_dir = "7HEAD_SEGMENT"
 csv_input_dir = "6ANALYSIS"
@@ -41,7 +42,6 @@ def get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_dat
     processable_videos = []
     for video in all_videos:
         base_name = video.replace("_headsegmentation.h5", "")
-        # Look for files with the pattern *_crop.csv
         input_csv_name = base_name + "_crop.csv"
         output_csv_name = base_name + "_crop_headangles.csv"
         
@@ -54,760 +54,521 @@ def get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_dat
     
     return os.path.join(head_segmentation_dir, random.choice(processable_videos))
 
-def get_skeleton(mask):
-    # Ensure mask is 2D boolean array
+def preprocess_mask(mask):
+    """
+    Preprocess mask to improve skeletonization by filling gaps and aggressive smoothing.
+    """
     if mask.ndim > 2:
         mask = mask.squeeze()
     mask = mask.astype(bool)
     
-    # Check if mask has any True pixels before processing
     if not np.any(mask):
-        print("Warning: Input mask is empty")
-        return mask  # Return empty mask if input is empty
+        return mask
     
-    # --- Pre-smoothing pipeline ---
-    # 1) Fill small holes
-    area_threshold = 150  # small hole area threshold (pixels)
+    # Fill small holes more aggressively
+    area_threshold = 500  # Increased from 100
     mask_filled = morphology.remove_small_holes(mask, area_threshold=area_threshold)
     
-    # 2) Closing then opening with an elliptical kernel (more aggressive radius)
-    kernel_radius = 6
+    # Multiple rounds of morphological operations for more aggressive smoothing
+    kernel_radius = 5  # Increased from 3
     ksize = 2 * kernel_radius + 1
     ell_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
-    # OpenCV expects uint8 mask with values 0/1
+    
     mask_u8 = mask_filled.astype(np.uint8)
+    
+    # First round: Close gaps
     closed = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, ell_kernel)
+    
+    # Second round: Opening to remove small protrusions
     opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, ell_kernel)
-    morph_smoothed = opened.astype(bool)
     
-    # 3) Gaussian blur on float mask and re-threshold back to bool
-    float_mask = morph_smoothed.astype(np.float32)
-    gaussian_sigma = 1.5
-    blurred = ndimage.gaussian_filter(float_mask, sigma=gaussian_sigma)
-    smoothed_mask = blurred >= 0.5
-    # --- End pre-smoothing pipeline ---
+    # Third round: Another closing with larger kernel
+    larger_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    final_morph = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, larger_kernel)
     
-    # Final safety check before skeletonization
-    if not np.any(smoothed_mask):
-        print("Warning: Using original mask for skeletonization")
-        smoothed_mask = mask
+    # Apply more aggressive Gaussian smoothing
+    float_mask = final_morph.astype(np.float32)
+    blurred = ndimage.gaussian_filter(float_mask, sigma=3.0)  # Increased from 1.0
     
-    # Use medial-axis skeletonization
-    skeleton = morphology.medial_axis(smoothed_mask)
+    # Additional smoothing pass
+    blurred = ndimage.gaussian_filter(blurred, sigma=2.0)
+    
+    smoothed_mask = blurred >= 0.4  # Lower threshold for more inclusive smoothing
+    
+    return smoothed_mask
+
+def get_medial_axis_skeleton(mask):
+    """
+    Extract medial axis skeleton from mask using scikit-image medial_axis.
+    """
+    if mask.ndim > 2:
+        mask = mask.squeeze()
+    mask = mask.astype(bool)
+    
+    if not np.any(mask):
+        print("Warning: Input mask is empty")
+        return mask
+    
+    # Preprocess the mask
+    processed_mask = preprocess_mask(mask)
+    
+    if not np.any(processed_mask):
+        print("Warning: Preprocessed mask is empty, using original")
+        processed_mask = mask
+    
+    # Extract medial axis
+    skeleton = morphology.medial_axis(processed_mask)
     
     if np.sum(skeleton) == 0:
-        print("ERROR: Skeleton is empty! Using original mask for skeletonization")
+        print("Warning: Medial axis is empty, trying with original mask")
         skeleton = morphology.medial_axis(mask)
+    
+    # Remove side branches to get clean midline
+    if np.sum(skeleton) > 0:
+        skeleton = remove_skeleton_branches(skeleton)
     
     return skeleton
 
-def process_all_frames(head_segments):
+def build_skeleton_graph(skeleton):
     """
-    Process all frames to generate skeletons from masks.
+    Build an 8-connected graph from skeleton pixels.
+    Returns adjacency list representation of the graph.
     """
-    skeletons = {}
-    skeleton_sizes = []
-
-    for frame_idx, frame_data in head_segments.items():
-        frame_skeletons = {}
-
-        for obj_id, mask in frame_data.items():
-            skeleton = get_skeleton(mask)
-            frame_skeletons[obj_id] = skeleton
-            
-            size = np.sum(skeleton)
-            skeleton_sizes.append(size)
-        skeletons[frame_idx] = frame_skeletons
-
-        if frame_idx % 100 == 0:
-            print(f"Processed frame {frame_idx}")
-
-    stats = {
-        'min_size': np.min(skeleton_sizes),
-        'max_size': np.max(skeleton_sizes), 
-        'mean_size': np.mean(skeleton_sizes),
-        'median_size': np.median(skeleton_sizes),
-        'std_size': np.std(skeleton_sizes)
-    }
-
-    print("\nSkeleton Statistics:")
-    print(f"Minimum size: {stats['min_size']:.1f} pixels")
-    print(f"Maximum size: {stats['max_size']:.1f} pixels") 
-    print(f"Mean size: {stats['mean_size']:.1f} pixels")
-    print(f"Median size: {stats['median_size']:.1f} pixels")
-    print(f"Standard deviation: {stats['std_size']:.1f} pixels")
-
-    return skeletons, stats
-
-def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150):
-    """
-    Keeps only the bottom specified number of pixels of skeletons.
-    """
-    truncated_skeletons = {}
+    points = np.column_stack(np.where(skeleton))
+    if len(points) == 0:
+        return {}, {}
     
-    for frame_idx, frame_data in skeleton_dict.items():
-        frame_truncated = {}
-        
-        for obj_id, skeleton in frame_data.items():
-            # Handle both 2D and 3D skeleton formats
-            if skeleton.ndim == 3:
-                skeleton_2d = skeleton[0]
-            else:
-                skeleton_2d = skeleton
+    # Create a mapping from coordinates to indices
+    coord_to_idx = {tuple(point): idx for idx, point in enumerate(points)}
+    
+    # Build adjacency list
+    graph = defaultdict(list)
+    
+    # 8-connected neighbors
+    neighbors = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    for idx, point in enumerate(points):
+        y, x = point
+        for dy, dx in neighbors:
+            ny, nx = y + dy, x + dx
+            neighbor_coord = (ny, nx)
             
-            points = np.where(skeleton_2d)
-            if len(points[0]) == 0:
-                frame_truncated[obj_id] = skeleton
+            if neighbor_coord in coord_to_idx:
+                neighbor_idx = coord_to_idx[neighbor_coord]
+                graph[idx].append(neighbor_idx)
+    
+    return graph, coord_to_idx
+
+def find_endpoints(graph, points):
+    """
+    Find endpoints (nodes with degree 1) and potential endpoints (nodes with degree 2 at extremes).
+    """
+    endpoints = []
+    
+    # Find nodes with degree 1 (true endpoints)
+    for node in graph:
+        if len(graph[node]) <= 1:
+            endpoints.append(node)
+    
+    # If no true endpoints, find the topmost and bottommost points
+    if len(endpoints) < 2:
+        y_coords = [points[i][0] for i in range(len(points))]
+        top_idx = np.argmin(y_coords)
+        bottom_idx = np.argmax(y_coords)
+        
+        endpoints = [top_idx, bottom_idx]
+    
+    return endpoints
+
+def bfs_longest_path(graph, start_node, points):
+    """
+    Find the longest path from start_node using BFS.
+    Returns the path and its length.
+    """
+    if start_node not in graph:
+        return [], 0
+    
+    visited = set()
+    queue = deque([(start_node, [start_node])])
+    longest_path = []
+    max_length = 0
+    
+    while queue:
+        node, path = queue.popleft()
+        
+        if node in visited:
+            continue
+            
+        visited.add(node)
+        
+        # Update longest path if current path is longer
+        if len(path) > max_length:
+            max_length = len(path)
+            longest_path = path.copy()
+        
+        # Explore neighbors
+        for neighbor in graph[node]:
+            if neighbor not in visited:
+                new_path = path + [neighbor]
+                queue.append((neighbor, new_path))
+    
+    return longest_path, max_length
+
+def find_longest_geodesic_path(graph, endpoints, points):
+    """
+    Find the longest geodesic path between any two endpoints.
+    """
+    if len(endpoints) < 2:
+        return []
+    
+    best_path = []
+    max_length = 0
+    
+    # Try all pairs of endpoints
+    for i, start in enumerate(endpoints):
+        for j, end in enumerate(endpoints):
+            if i >= j:
                 continue
-            
-            y_min = np.min(points[0])
-            y_max = np.max(points[0])
-            original_height = y_max - y_min
-            
-            # Keep bottom pixels instead of top pixels
-            cutoff_point = y_max - keep_pixels - 1
-            
-            # Create truncated skeleton with same format as input
-            if skeleton.ndim == 3:
-                truncated = skeleton.copy()
-                truncated[0, :cutoff_point, :] = False  # Remove top portion
-            else:
-                truncated = skeleton.copy()
-                truncated[:cutoff_point, :] = False  # Remove top portion
-            
-            # Check result
-            if skeleton.ndim == 3:
-                new_points = np.where(truncated[0])
-            else:
-                new_points = np.where(truncated)
                 
-            if len(new_points[0]) > 0:
-                new_height = np.max(new_points[0]) - np.min(new_points[0])
+            # BFS from start to find path to end
+            visited = set()
+            queue = deque([(start, [start])])
+            
+            while queue:
+                node, path = queue.popleft()
+                
+                if node in visited:
+                    continue
+                    
+                visited.add(node)
+                
+                if node == end:
+                    if len(path) > max_length:
+                        max_length = len(path)
+                        best_path = path.copy()
+                    break
+                
+                for neighbor in graph[node]:
+                    if neighbor not in visited:
+                        new_path = path + [neighbor]
+                        queue.append((neighbor, new_path))
+    
+    # If no path found between endpoints, use longest path from any endpoint
+    if not best_path:
+        for endpoint in endpoints:
+            path, length = bfs_longest_path(graph, endpoint, points)
+            if length > max_length:
+                max_length = length
+                best_path = path
+    
+    return best_path
+
+def remove_skeleton_branches(skeleton):
+    """
+    Remove side branches from skeleton by keeping only the longest geodesic path.
+    """
+    if not np.any(skeleton):
+        return skeleton
+    
+    # Build graph from skeleton
+    graph, coord_to_idx = build_skeleton_graph(skeleton)
+    points = np.column_stack(np.where(skeleton))
+    
+    if len(points) < 3:
+        return skeleton
+    
+    # Find endpoints
+    endpoints = find_endpoints(graph, points)
+    
+    # Find longest geodesic path
+    longest_path = find_longest_geodesic_path(graph, endpoints, points)
+    
+    if not longest_path:
+        return skeleton
+    
+    # Create new skeleton with only the longest path
+    cleaned_skeleton = np.zeros_like(skeleton, dtype=bool)
+    
+    for node_idx in longest_path:
+        if node_idx < len(points):
+            y, x = points[node_idx]
+            if 0 <= y < skeleton.shape[0] and 0 <= x < skeleton.shape[1]:
+                cleaned_skeleton[y, x] = True
+    
+    return cleaned_skeleton
+
+def order_skeleton_points(skeleton):
+    """
+    Order skeleton points from top to bottom using a more efficient approach.
+    """
+    points = np.column_stack(np.where(skeleton))
+    if len(points) == 0:
+        return points
+    
+    # Sort by row (y-coordinate) to get top-to-bottom ordering
+    points = points[np.argsort(points[:, 0])]
+    
+    # Always subsample large skeletons for efficiency
+    if len(points) > 50:
+        # Group points by y-coordinate and take representative points
+        unique_y = np.unique(points[:, 0])
+        step_size = max(1, len(unique_y) // 50)  # Aim for ~50 points
+        sampled_points = []
+        
+        for y in unique_y[::step_size]:
+            y_points = points[points[:, 0] == y]
+            if len(y_points) == 1:
+                sampled_points.append(y_points[0])
             else:
-                new_height = 0
-            
-            print(f"Frame {frame_idx}, Object {obj_id}:")
-            print(f"Skeleton format: {skeleton.shape}")
-            print(f"Original height: {original_height}")
-            print(f"New height: {new_height}")
-            print(f"Bottom point: {y_max}")
-            print(f"Cutoff point: {cutoff_point}")
-            print("------------------------")            
-            frame_truncated[obj_id] = truncated            
-        truncated_skeletons[frame_idx] = frame_truncated
-    
-    return truncated_skeletons
+                # Take the median x-coordinate point for this y-level
+                median_x = np.median(y_points[:, 1])
+                closest_idx = np.argmin(np.abs(y_points[:, 1] - median_x))
+                sampled_points.append(y_points[closest_idx])
+        
+        return np.array(sampled_points)
+    else:
+        # For small skeletons, return as-is (already sorted by y)
+        return points
 
-def smooth_head_angles(angles, window_size=3, deviation_threshold=15):
+def calculate_three_point_angle(p1, p2, p3):
     """
-    Smooth noise peaks in head angle data by comparing each point with the mean
-    of surrounding windows. If a point deviates significantly from both surrounding
-    windows' means, it is considered noise and smoothed.
-    """    
-    angles = np.array(angles)
-    smoothed = angles.copy()
-    peaks_detected = []
+    Calculate angle at point p2 formed by points p1-p2-p3.
+    Returns angle in degrees.
+    """
+    v1 = p1 - p2
+    v2 = p3 - p2
     
-    def check_and_smooth_point(i, window_before, window_after):
-        if len(window_before) == 0 or len(window_after) == 0:
-            return None
-            
-        mean_before = np.mean(window_before)
-        mean_after = np.mean(window_after)
-        std_before = np.std(window_before)
-        std_after = np.std(window_after)
-        
-        dev_from_before = abs(angles[i] - mean_before)
-        dev_from_after = abs(angles[i] - mean_after)
-        
-        max_window_std = 10        
-        if (dev_from_before > deviation_threshold and 
-            dev_from_after > deviation_threshold and
-            std_before < max_window_std and 
-            std_after < max_window_std):
-            
-            weight_before = 1 / (std_before + 1e-6)
-            weight_after = 1 / (std_after + 1e-6)
-            new_value = (mean_before * weight_before + mean_after * weight_after) / (weight_before + weight_after)
-            
-            return new_value        
-        return None
+    # Calculate magnitudes
+    mag1 = np.linalg.norm(v1)
+    mag2 = np.linalg.norm(v2)
     
-    for i in range(len(angles)):
-        if i < window_size:
-            window_before = angles[0:i]
-            window_after = angles[i+1:i+1+window_size]
-        elif i >= len(angles) - window_size:
-            window_before = angles[i-window_size:i]
-            window_after = angles[i+1:]
-        else:
-            window_before = angles[i-window_size:i]
-            window_after = angles[i+1:i+1+window_size]
-        
-        if i == 0:
-            if len(angles) > window_size:
-                next_mean = np.mean(angles[1:1+window_size])
-                next_std = np.std(angles[1:1+window_size])
-                if (abs(angles[i] - next_mean) > deviation_threshold and 
-                    next_std < 10):
-                    new_value = next_mean
-                    peaks_detected.append((i, angles[i], new_value))
-                    smoothed[i] = new_value
-            continue
-            
-        if i == len(angles) - 1:
-            prev_mean = np.mean(angles[-window_size-1:-1])
-            prev_std = np.std(angles[-window_size-1:-1])
-            if (abs(angles[i] - prev_mean) > deviation_threshold and 
-                prev_std < 10):
-                new_value = prev_mean
-                peaks_detected.append((i, angles[i], new_value))
-                smoothed[i] = new_value
-            continue
-        
-        new_value = check_and_smooth_point(i, window_before, window_after)
-        if new_value is not None:
-            peaks_detected.append((i, angles[i], new_value))
-            smoothed[i] = new_value
+    if mag1 == 0 or mag2 == 0:
+        return 0
     
-    return smoothed, peaks_detected
+    # Calculate cosine of angle
+    cos_angle = np.dot(v1, v2) / (mag1 * mag2)
+    cos_angle = np.clip(cos_angle, -1.0, 1.0)
+    
+    # Convert to degrees
+    angle_rad = np.arccos(cos_angle)
+    angle_deg = np.degrees(angle_rad)
+    
+    # Return the acute angle (0-180 degrees)
+    return angle_deg
 
-def smooth_head_angles_with_validation(df, id_column='object_id', angle_column='angle_degrees',
-                                     window_size=3, deviation_threshold=15):
+def find_maximum_angle_point(skeleton_points, min_distance_from_ends=10):
     """
-    Apply head angle smoothing to a DataFrame.
+    Find the point along the skeleton that creates the maximum angle with the endpoints.
     """
-    result_df = df.copy()    
-    result_df['original_angle'] = df[angle_column]
-    result_df['is_noise_peak'] = False
-    result_df['peak_deviation'] = 0.0
-    result_df['window_size_used'] = 0
+    if len(skeleton_points) < 3:
+        return None, 0, 0, 0
     
-    for obj_id in df[id_column].unique():
-        obj_mask = df[id_column] == obj_id
-        obj_angles = df.loc[obj_mask, angle_column].values
+    top_point = skeleton_points[0]
+    bottom_point = skeleton_points[-1]
+    
+    max_angle = 0
+    best_point_idx = len(skeleton_points) // 2  # Default to middle
+    best_point = skeleton_points[best_point_idx]
+    
+    # Search for the point that creates the maximum angle
+    start_idx = min(min_distance_from_ends, len(skeleton_points) // 4)
+    end_idx = max(len(skeleton_points) - min_distance_from_ends, 3 * len(skeleton_points) // 4)
+    
+    for i in range(start_idx, end_idx):
+        middle_point = skeleton_points[i]
         
-        smoothed_angles, peaks = smooth_head_angles(
-            obj_angles, 
-            window_size=window_size,
-            deviation_threshold=deviation_threshold
-        )
+        # Calculate angle at the middle point
+        angle = calculate_three_point_angle(top_point, middle_point, bottom_point)
         
-        result_df.loc[obj_mask, angle_column] = smoothed_angles        
-        for idx, orig_val, new_val in peaks:
-            df_idx = df.loc[obj_mask].iloc[idx].name
-            result_df.loc[df_idx, 'is_noise_peak'] = True
-            result_df.loc[df_idx, 'peak_deviation'] = abs(orig_val - new_val)
-            if idx < window_size:
-                result_df.loc[df_idx, 'window_size_used'] = idx
-            elif idx >= len(obj_angles) - window_size:
-                result_df.loc[df_idx, 'window_size_used'] = len(obj_angles) - idx - 1
-            else:
-                result_df.loc[df_idx, 'window_size_used'] = window_size
+        # We want the deviation from 180 degrees (straight line)
+        deviation = abs(180 - angle)
+        
+        if deviation > max_angle:
+            max_angle = deviation
+            best_point_idx = i
+            best_point = middle_point
     
-    return result_df
+    # Calculate the final angle - deviation from straight
+    final_angle = max_angle
+    
+    # Determine the direction of bending using cross product
+    v1 = best_point - top_point
+    v2 = bottom_point - best_point
+    
+    # Convert to 3D vectors for cross product calculation
+    v1_3d = np.array([v1[0], v1[1], 0])
+    v2_3d = np.array([v2[0], v2[1], 0])
+    cross_product = np.cross(v1_3d, v2_3d)[2]  # Take z-component
+    
+    # Apply sign based on bending direction
+    if cross_product < 0:
+        final_angle = -final_angle
+    
+    return best_point, final_angle, best_point_idx, len(skeleton_points)
 
-def normalize_skeleton_points(points, num_points=100):
+def calculate_head_angle_alternative(skeleton, prev_angle=None, min_skeleton_length=20):
     """
-    Resample skeleton points to have uniform spacing.
-    """
-    dists = np.sqrt(np.sum(np.diff(points, axis=0)**2, axis=1))
-    cum_dists = np.concatenate(([0], np.cumsum(dists)))
-    total_length = cum_dists[-1]
-    
-    even_dists = np.linspace(0, total_length, num_points)
-    new_points = np.zeros((num_points, 2))
-    for i in range(2):
-        new_points[:, i] = np.interp(even_dists, cum_dists, points[:, i])
-    
-    return new_points, total_length
-
-def gaussian_weighted_curvature(points, window_size=25, sigma=8, restriction_point=0.5):
-    """
-    Calculate curvature using Gaussian-weighted windows, with stronger smoothing
-    and focus on the region between head tip and restriction point.
-    """
-    valid_points = points[:int(len(points) * restriction_point)]    
-    smooth_points = np.zeros_like(valid_points)
-    for i in range(2):
-        smooth_points[:, i] = ndimage.gaussian_filter1d(valid_points[:, i], sigma=sigma/2)
-    
-    window_size = window_size if window_size % 2 == 1 else window_size + 1
-    pad_width = window_size // 2
-    padded_points = np.pad(smooth_points, ((pad_width, pad_width), (0, 0)), mode='edge')
-    
-    weights = ndimage.gaussian_filter1d(np.ones(window_size), sigma)
-    weights /= np.sum(weights)
-    
-    curvatures = []    
-    for i in range(len(smooth_points)):
-        window = padded_points[i:i+window_size]
-        centroid = np.sum(window * weights[:, np.newaxis], axis=0) / np.sum(weights)
-        centered = window - centroid
-        cov = np.dot(centered.T, centered * weights[:, np.newaxis]) / np.sum(weights)
-        eigvals = la.eigvalsh(cov)
-        curvature = eigvals[0] / (eigvals[1] + 1e-10)
-        curvatures.append(curvature)
-    
-    full_curvatures = np.zeros(len(points))
-    full_curvatures[:len(curvatures)] = curvatures
-    
-    return full_curvatures
-
-def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_vector_length=5, 
-                                             restriction_point=0.4, straight_threshold=3):
-    """
-    Calculate head angle and bend location along the skeleton.
-    Never drops frames - always returns a result dictionary with appropriate error handling.
-    For straight worms (angle <= straight_threshold), bend values are set to 0.
+    Alternative head angle calculation using medial axis and three-point method.
     """
     try:
-        points = np.column_stack(np.where(skeleton))
-        if len(points) == 0:
+        # Handle both 2D and 3D skeleton formats
+        if skeleton.ndim == 3:
+            skeleton_2d = skeleton[0]
+        else:
+            skeleton_2d = skeleton
+        
+        if not np.any(skeleton_2d):
             return {
                 'angle_degrees': prev_angle if prev_angle is not None else 0,
                 'error': 'Empty skeleton',
-                'head_mag': 0,
-                'body_mag': 0,
-                'bend_location': 0,
-                'bend_magnitude': 0,
-                'bend_position': [0, 0],
-                'skeleton_points': [[0, 0]],
-                'curvature_profile': [0],
-                'head_start_pos': [0, 0],
-                'head_end_pos': [0, 0],
-                'body_start_pos': [0, 0],
-                'body_end_pos': [0, 0],
-                'head_vector': [0, 0],
-                'body_vector': [0, 0]
+                'bend_point': [0, 0],
+                'bend_position_relative': 0,
+                'skeleton_length': 0,
+                'top_point': [0, 0],
+                'bottom_point': [0, 0],
+                'skeleton_points': [[0, 0]]
             }
         
-        ordered_points = points[np.argsort(points[:, 0])]
-        norm_points, total_length = normalize_skeleton_points(ordered_points, num_points=100)
+        # Order skeleton points from top to bottom
+        ordered_points = order_skeleton_points(skeleton_2d)
         
-        # Calculate head angle
-        head_sections = [0.05, 0.08, 0.1, 0.15]
-        body_section = 0.3        
-        best_result = None
-        max_angle_magnitude = 0
-        
-        for head_section in head_sections:
-            head_end_idx = max(2, int(head_section * len(norm_points)))
-            body_start_idx = int((1 - body_section) * len(norm_points))
-            
-            head_start = norm_points[0]
-            head_end = norm_points[head_end_idx]
-            body_start = norm_points[body_start_idx]
-            body_end = norm_points[-1]
-            
-            head_vector = head_end - head_start
-            body_vector = body_end - body_start
-            
-            head_mag = np.linalg.norm(head_vector)
-            body_mag = np.linalg.norm(body_vector)
-            
-            if head_mag < min_vector_length or body_mag < min_vector_length:
-                continue
-            
-            dot_product = np.dot(head_vector, body_vector)
-            cos_angle = np.clip(dot_product / (head_mag * body_mag), -1.0, 1.0)
-            angle_rad = np.arccos(cos_angle)
-            angle_deg = np.degrees(angle_rad)
-            
-            # Calculate cross product for 2D vectors to determine sign
-            # Convert to 3D to avoid deprecation warning
-            head_3d = np.append(head_vector, 0)
-            body_3d = np.append(body_vector, 0)
-            cross_product = np.cross(body_3d, head_3d)[2]  # Take z-component
-            if cross_product < 0:
-                angle_deg = -angle_deg
-            
-            if prev_angle is not None:
-                angle_change = abs(angle_deg - prev_angle)
-                if angle_change > 25:
-                    continue
-            
-            if abs(angle_deg) > max_angle_magnitude:
-                max_angle_magnitude = abs(angle_deg)
-                best_result = {
-                    'angle_degrees': float(angle_deg),
-                    'head_start_pos': head_start.tolist(),
-                    'head_end_pos': head_end.tolist(),
-                    'body_start_pos': body_start.tolist(),
-                    'body_end_pos': body_end.tolist(),
-                    'head_vector': head_vector.tolist(),
-                    'body_vector': body_vector.tolist(),
-                    'head_mag': float(head_mag),
-                    'body_mag': float(body_mag),
-                    'head_section': head_section,
-                    'skeleton_points': norm_points.tolist(),
-                    'error': None
-                }
-        
-        if best_result is None:
-            best_result = {
+        if len(ordered_points) < min_skeleton_length:
+            return {
                 'angle_degrees': prev_angle if prev_angle is not None else 0,
-                'error': 'No valid angle found with current parameters',
-                'head_mag': 0,
-                'body_mag': 0,
-                'head_start_pos': norm_points[0].tolist(),
-                'head_end_pos': norm_points[min(5, len(norm_points)-1)].tolist(),
-                'body_start_pos': norm_points[max(0, len(norm_points)-10)].tolist(),
-                'body_end_pos': norm_points[-1].tolist(),
-                'head_vector': [0, 0],
-                'body_vector': [0, 0],
-                'skeleton_points': norm_points.tolist()
+                'error': f'Skeleton too short: {len(ordered_points)} < {min_skeleton_length}',
+                'bend_point': [0, 0],
+                'bend_position_relative': 0,
+                'skeleton_length': len(ordered_points),
+                'top_point': ordered_points[0].tolist() if len(ordered_points) > 0 else [0, 0],
+                'bottom_point': ordered_points[-1].tolist() if len(ordered_points) > 0 else [0, 0],
+                'skeleton_points': ordered_points.tolist()
             }
         
-        # If the worm is straight (angle within threshold), set all bend-related values to 0
-        if abs(best_result['angle_degrees']) <= straight_threshold:
-            best_result.update({
-                'bend_location': 0,
-                'bend_magnitude': 0,
-                'bend_position': [0, 0],
-                'curvature_profile': np.zeros(len(norm_points)).tolist(),
-                'is_straight': True
-            })
-        else:
-            # Calculate curvature only for non-straight worms
-            curvatures = gaussian_weighted_curvature(norm_points, window_size=25, sigma=8, 
-                                                   restriction_point=restriction_point)
-            
-            # Find the location of maximum bend (only consider points up to restriction)
-            valid_range = int(len(curvatures) * restriction_point)
-            max_curvature_idx = np.argmax(np.abs(curvatures[:valid_range]))
-            bend_location = max_curvature_idx / len(curvatures)
-            bend_magnitude = float(np.abs(curvatures[max_curvature_idx]))
-            bend_position = norm_points[max_curvature_idx].tolist()
-            
-            best_result.update({
-                'bend_location': bend_location,
-                'bend_magnitude': bend_magnitude,
-                'bend_position': bend_position,
-                'curvature_profile': curvatures.tolist(),
-                'is_straight': False
-            })
+        # Find the point that creates maximum angle
+        bend_point, angle_degrees, bend_idx, skeleton_length = find_maximum_angle_point(ordered_points)
         
-        return best_result
+        # Calculate relative position of bend point
+        bend_position_relative = bend_idx / len(ordered_points) if len(ordered_points) > 0 else 0
+        
+        result = {
+            'angle_degrees': float(angle_degrees),
+            'error': None,
+            'bend_point': bend_point.tolist(),
+            'bend_position_relative': float(bend_position_relative),
+            'skeleton_length': skeleton_length,
+            'top_point': ordered_points[0].tolist(),
+            'bottom_point': ordered_points[-1].tolist(),
+            'skeleton_points': ordered_points.tolist()
+        }
+        
+        return result
         
     except Exception as e:
         return {
             'angle_degrees': prev_angle if prev_angle is not None else 0,
             'error': f'Unexpected error: {str(e)}',
-            'head_mag': 0,
-            'body_mag': 0,
-            'bend_location': 0,
-            'bend_magnitude': 0,
-            'bend_position': [0, 0],
-            'skeleton_points': [[0, 0]],
-            'curvature_profile': [0],
-            'head_start_pos': [0, 0],
-            'head_end_pos': [0, 0],
-            'body_start_pos': [0, 0],
-            'body_end_pos': [0, 0],
-            'head_vector': [0, 0],
-            'body_vector': [0, 0],
-            'is_straight': True
+            'bend_point': [0, 0],
+            'bend_position_relative': 0,
+            'skeleton_length': 0,
+            'top_point': [0, 0],
+            'bottom_point': [0, 0],
+            'skeleton_points': [[0, 0]]
         }
 
-def process_skeleton_batch(truncated_skeletons, min_vector_length=5, 
-                         restriction_point=0.5, straight_threshold=3,
-                         smoothing_window=3, deviation_threshold=15):
-    initial_data = []
-    frame_results = {}
-    
-    for frame_idx in sorted(truncated_skeletons.keys()):
-        frame_data = truncated_skeletons[frame_idx]
-        frame_results[frame_idx] = {}
-        
-        for obj_id, skeleton_data in frame_data.items():
-            # Handle both 2D and 3D skeleton formats
-            if skeleton_data.ndim == 3:
-                skeleton = skeleton_data[0]
-            else:
-                skeleton = skeleton_data
+def process_all_frames_alternative(head_segments):
+    """
+    Process all frames using the alternative skeletonization method.
+    """
+    skeletons = {}
+    smoothed_masks = {}
+    skeleton_stats = []
+
+    for frame_idx, frame_data in head_segments.items():
+        frame_skeletons = {}
+        frame_smoothed_masks = {}
+
+        for obj_id, mask in frame_data.items():
+            # Store the smoothed mask for visualization
+            smoothed_mask = preprocess_mask(mask)
+            frame_smoothed_masks[obj_id] = smoothed_mask
             
-            result = calculate_head_angle_with_positions_and_bend(
+            skeleton = get_medial_axis_skeleton(mask)
+            frame_skeletons[obj_id] = skeleton
+            
+            skeleton_length = np.sum(skeleton)
+            skeleton_stats.append(skeleton_length)
+        
+        skeletons[frame_idx] = frame_skeletons
+        smoothed_masks[frame_idx] = frame_smoothed_masks
+
+        if frame_idx % 100 == 0:
+            print(f"Processed frame {frame_idx}")
+
+    stats = {
+        'min_length': np.min(skeleton_stats),
+        'max_length': np.max(skeleton_stats),
+        'mean_length': np.mean(skeleton_stats),
+        'median_length': np.median(skeleton_stats),
+        'std_length': np.std(skeleton_stats)
+    }
+
+    print("\nSkeleton Statistics:")
+    print(f"Minimum length: {stats['min_length']:.1f} pixels")
+    print(f"Maximum length: {stats['max_length']:.1f} pixels")
+    print(f"Mean length: {stats['mean_length']:.1f} pixels")
+    print(f"Median length: {stats['median_length']:.1f} pixels")
+    print(f"Standard deviation: {stats['std_length']:.1f} pixels")
+
+    return skeletons, smoothed_masks, stats
+
+def process_skeleton_batch_alternative(skeletons, min_skeleton_length=20):
+    """
+    Process skeleton batch using alternative angle calculation method.
+    """
+    results_data = []
+    
+    for frame_idx in sorted(skeletons.keys()):
+        frame_data = skeletons[frame_idx]
+        
+        for obj_id, skeleton in frame_data.items():
+            result = calculate_head_angle_alternative(
                 skeleton,
                 prev_angle=None,
-                min_vector_length=min_vector_length,
-                restriction_point=restriction_point,
-                straight_threshold=straight_threshold
-            )            
-            frame_results[frame_idx][obj_id] = result
-    
-    for frame_idx in sorted(truncated_skeletons.keys()):
-        for obj_id in frame_results[frame_idx].keys():
-            result = frame_results[frame_idx][obj_id]
-            
-            if result['error'] is not None:
-                prev_valid_frame = None
-                prev_valid_result = None
-                next_valid_frame = None
-                next_valid_result = None
-                
-                for prev_frame in range(frame_idx - 1, -1, -1):
-                    if prev_frame in frame_results and obj_id in frame_results[prev_frame]:
-                        prev_result = frame_results[prev_frame][obj_id]
-                        if prev_result['error'] is None:
-                            prev_valid_frame = prev_frame
-                            prev_valid_result = prev_result
-                            break
-                
-                for next_frame in range(frame_idx + 1, max(frame_results.keys()) + 1):
-                    if next_frame in frame_results and obj_id in frame_results[next_frame]:
-                        next_result = frame_results[next_frame][obj_id]
-                        if next_result['error'] is None:
-                            next_valid_frame = next_frame
-                            next_valid_result = next_result
-                            break
-                
-                if prev_valid_result and next_valid_result:
-                    total_frames = next_valid_frame - prev_valid_frame
-                    weight_next = (frame_idx - prev_valid_frame) / total_frames
-                    weight_prev = 1 - weight_next
-                    
-                    interpolated_result = interpolate_results(
-                        prev_valid_result, next_valid_result, 
-                        weight_prev, weight_next,
-                        straight_threshold=straight_threshold)
-                    interpolated_result['error'] = f"Interpolated between frames {prev_valid_frame} and {next_valid_frame}"
-                    frame_results[frame_idx][obj_id] = interpolated_result
-                    
-                elif prev_valid_result:
-                    frames_since_valid = frame_idx - prev_valid_frame
-                    decay_factor = 0.9 ** frames_since_valid
-                    
-                    interpolated_result = decay_result(
-                        prev_valid_result, decay_factor,
-                        straight_threshold=straight_threshold)
-                    interpolated_result['error'] = f"Decayed from previous frame {prev_valid_frame}"
-                    frame_results[frame_idx][obj_id] = interpolated_result
-                    
-                elif next_valid_result:
-                    frames_until_valid = next_valid_frame - frame_idx
-                    decay_factor = 0.9 ** frames_until_valid
-                    
-                    interpolated_result = decay_result(
-                        next_valid_result, decay_factor,
-                        straight_threshold=straight_threshold)
-                    interpolated_result['error'] = f"Decayed from next frame {next_valid_frame}"
-                    frame_results[frame_idx][obj_id] = interpolated_result
-                    
-                else:
-                    frame_results[frame_idx][obj_id] = {
-                        'angle_degrees': 0.0,
-                        'head_mag': 0.0,
-                        'body_mag': 0.0,
-                        'bend_location': 0,
-                        'bend_magnitude': 0,
-                        'bend_position': [0, 0],
-                        'skeleton_points': [[0, 0]],
-                        'curvature_profile': [0],
-                        'head_start_pos': [0, 0],
-                        'head_end_pos': [0, 0],
-                        'body_start_pos': [0, 0],
-                        'body_end_pos': [0, 0],
-                        'head_vector': [0, 0],
-                        'body_vector': [0, 0],
-                        'is_straight': True,
-                        'error': 'No valid frames available for interpolation'
-                    }
-            
-            initial_data.append({
-                'frame': frame_idx,
-                'object_id': obj_id,
-                'angle_degrees': frame_results[frame_idx][obj_id]['angle_degrees'],
-                'bend_location': frame_results[frame_idx][obj_id]['bend_location'],
-                'bend_magnitude': frame_results[frame_idx][obj_id]['bend_magnitude'],
-                'bend_position_y': frame_results[frame_idx][obj_id]['bend_position'][0],
-                'bend_position_x': frame_results[frame_idx][obj_id]['bend_position'][1],
-                'head_mag': frame_results[frame_idx][obj_id]['head_mag'],
-                'body_mag': frame_results[frame_idx][obj_id]['body_mag'],
-                'is_straight': frame_results[frame_idx][obj_id].get('is_straight', abs(frame_results[frame_idx][obj_id]['angle_degrees']) <= straight_threshold),
-                'error': frame_results[frame_idx][obj_id].get('error', None)
-            })
-    
-    # Convert to DataFrame and apply moving average smoothing first
-    initial_df = pd.DataFrame(initial_data)
-    
-    # Apply moving average smoothing with window size of 5
-    moving_avg_df = initial_df.copy()
-    for obj_id in initial_df['object_id'].unique():
-        obj_mask = initial_df['object_id'] == obj_id
-        obj_angles = initial_df.loc[obj_mask, 'angle_degrees'].values
-        
-        # Apply moving average with window size 5
-        smoothed_angles = pd.Series(obj_angles).rolling(window=5, center=True, min_periods=1).mean().values
-        moving_avg_df.loc[obj_mask, 'angle_degrees'] = smoothed_angles
-    
-    # Then apply the existing noise peak smoothing
-    smoothed_df = smooth_head_angles_with_validation(
-        moving_avg_df,
-        id_column='object_id',
-        angle_column='angle_degrees',
-        window_size=smoothing_window,
-        deviation_threshold=deviation_threshold
-    )
-    
-    # Final pass: Recalculate bend positions based on smoothed angles
-    final_data = []
-    for obj_id in smoothed_df['object_id'].unique():
-        obj_data = smoothed_df[smoothed_df['object_id'] == obj_id]
-        
-        prev_angle = None
-        for _, row in obj_data.iterrows():
-            frame_idx = row['frame']
-            skeleton_data = truncated_skeletons[frame_idx][obj_id]
-            
-            # Handle both 2D and 3D skeleton formats
-            if skeleton_data.ndim == 3:
-                skeleton = skeleton_data[0]
-            else:
-                skeleton = skeleton_data
-                
-            new_result = calculate_head_angle_with_positions_and_bend(
-                skeleton,
-                prev_angle=prev_angle,
-                min_vector_length=min_vector_length,
-                restriction_point=restriction_point,
-                straight_threshold=straight_threshold
+                min_skeleton_length=min_skeleton_length
             )
-            prev_angle = row['angle_degrees']            
-            is_straight = abs(row['angle_degrees']) <= straight_threshold
             
-            if is_straight:
-                bend_location = 0
-                bend_magnitude = 0
-                bend_position_y = 0
-                bend_position_x = 0
-            else:
-                bend_location = new_result['bend_location']
-                bend_magnitude = new_result['bend_magnitude']
-                bend_position_y = new_result['bend_position'][0]
-                bend_position_x = new_result['bend_position'][1]
-            
-            final_result = {
+            result_record = {
                 'frame': frame_idx,
                 'object_id': obj_id,
-                'angle_degrees': row['angle_degrees'],
-                'bend_location': bend_location,
-                'bend_magnitude': bend_magnitude,
-                'bend_position_y': bend_position_y,
-                'bend_position_x': bend_position_x,
-                'head_mag': new_result['head_mag'],
-                'body_mag': new_result['body_mag'],
-                'is_noise_peak': row['is_noise_peak'],
-                'peak_deviation': row['peak_deviation'],
-                'window_size_used': row['window_size_used'],
-                'is_straight': is_straight,
-                'error': new_result.get('error', None)
+                'angle_degrees': result['angle_degrees'],
+                'bend_point_y': result['bend_point'][0],
+                'bend_point_x': result['bend_point'][1],
+                'bend_position_relative': result['bend_position_relative'],
+                'skeleton_length': result['skeleton_length'],
+                'top_point_y': result['top_point'][0],
+                'top_point_x': result['top_point'][1],
+                'bottom_point_y': result['bottom_point'][0],
+                'bottom_point_x': result['bottom_point'][1],
+                'error': result['error']
             }
             
-            final_data.append(final_result)
+            results_data.append(result_record)
     
-    final_df = pd.DataFrame(final_data)
+    results_df = pd.DataFrame(results_data)
     
-    # Final validation check for correct values
-    straight_count = final_df[final_df['is_straight'] == True].shape[0]
-    non_straight_with_bends = final_df[(final_df['is_straight'] == False) & (final_df['bend_location'] > 0)].shape[0]
-    print(f"Final validation - Straight frames: {straight_count}, Non-straight with bend values: {non_straight_with_bends}")
-    final_df['has_warning'] = final_df['error'].notna()
-    warning_count = final_df['has_warning'].sum()
-    if warning_count > 0:
-        print(f"\nWarning Summary:")
-        print(f"Total frames with warnings: {warning_count}")
-        print("\nSample of warnings:")
-        for error in final_df[final_df['has_warning']]['error'].unique()[:5]:
-            count = final_df[final_df['error'] == error].shape[0]
-            print(f"- {error}: {count} frames")
+    # Apply smoothing to reduce noise
+    for obj_id in results_df['object_id'].unique():
+        obj_mask = results_df['object_id'] == obj_id
+        obj_angles = results_df.loc[obj_mask, 'angle_degrees'].values
+        
+        # Apply moving average smoothing
+        smoothed_angles = pd.Series(obj_angles).rolling(window=5, center=True, min_periods=1).mean().values
+        results_df.loc[obj_mask, 'angle_degrees'] = smoothed_angles
     
-    return final_df
-
-def interpolate_results(prev_result, next_result, weight_prev, weight_next, straight_threshold=3):
-    """
-    Interpolate between two results based on weights.
-    If the interpolated angle is within the straight threshold, all bend values are set to 0.
-    """
-    def interpolate_value(prev_val, next_val):
-        if isinstance(prev_val, (list, np.ndarray)):
-            result = []
-            for p, n in zip(prev_val, next_val):
-                if isinstance(p, (list, np.ndarray)):
-                    result.append(interpolate_value(p, n))
-                else:
-                    result.append(weight_prev * p + weight_next * n)
-            return result
-        return weight_prev * prev_val + weight_next * next_val
-    
-    interpolated = {}
-    angle_degrees = interpolate_value(prev_result['angle_degrees'], next_result['angle_degrees'])
-    
-    if abs(angle_degrees) <= straight_threshold:
-        return {
-            'angle_degrees': angle_degrees,
-            'head_mag': interpolate_value(prev_result['head_mag'], next_result['head_mag']),
-            'body_mag': interpolate_value(prev_result['body_mag'], next_result['body_mag']),
-            'bend_location': 0,
-            'bend_magnitude': 0,
-            'bend_position': [0, 0],
-            'head_start_pos': interpolate_value(prev_result['head_start_pos'], next_result['head_start_pos']),
-            'head_end_pos': interpolate_value(prev_result['head_end_pos'], next_result['head_end_pos']),
-            'body_start_pos': interpolate_value(prev_result['body_start_pos'], next_result['body_start_pos']),
-            'body_end_pos': interpolate_value(prev_result['body_end_pos'], next_result['body_end_pos']),
-            'head_vector': interpolate_value(prev_result['head_vector'], next_result['head_vector']),
-            'body_vector': interpolate_value(prev_result['body_vector'], next_result['body_vector']),
-            'is_straight': True
-        }
-    
-    for key in prev_result.keys():
-        if key in ['error', 'is_straight']:
-            continue
-        interpolated[key] = interpolate_value(prev_result[key], next_result[key])
-    
-    interpolated['is_straight'] = False
-    return interpolated
-
-def decay_result(base_result, decay_factor, straight_threshold=3):
-    """
-    Apply decay to a result for interpolation.
-    """
-    def apply_decay(value):
-        if isinstance(value, (list, np.ndarray)):
-            return [apply_decay(v) for v in value]
-        else:
-            return value * decay_factor
-    
-    angle_degrees = base_result['angle_degrees'] * decay_factor    
-    if abs(angle_degrees) <= straight_threshold:
-        return {
-            'angle_degrees': angle_degrees,
-            'head_mag': base_result['head_mag'] * decay_factor,
-            'body_mag': base_result['body_mag'] * decay_factor,
-            'bend_location': 0,
-            'bend_magnitude': 0,
-            'bend_position': [0, 0],
-            'head_start_pos': apply_decay(base_result['head_start_pos']),
-            'head_end_pos': apply_decay(base_result['head_end_pos']),
-            'body_start_pos': apply_decay(base_result['body_start_pos']),
-            'body_end_pos': apply_decay(base_result['body_end_pos']),
-            'head_vector': apply_decay(base_result['head_vector']),
-            'body_vector': apply_decay(base_result['body_vector']),
-            'is_straight': True
-        }
-    
-    decayed = {}
-    for key, value in base_result.items():
-        if key in ['error', 'is_straight']:
-            continue
-        decayed[key] = apply_decay(value)
-    
-    decayed['is_straight'] = False
-    return decayed
+    return results_df
 
 def save_head_angles(filename, results_df, csv_input_dir, final_data_dir):
     base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
-    # Use the new naming convention
     input_csv_name = base_name + "_crop.csv"
     output_csv_name = base_name + "_crop_headangles.csv"
 
@@ -818,139 +579,93 @@ def save_head_angles(filename, results_df, csv_input_dir, final_data_dir):
     print(f"Input data shape: {final_df.shape}")
     print(f"Results df shape: {results_df.shape}")
 
-    columns_to_overwrite = [col for col in results_df.columns if col in final_df.columns]
-    print(f"Columns that will be overwritten: {columns_to_overwrite}")
-
+    # Merge the results with the input data
     merged_df = pd.merge(final_df, results_df, 
                         left_on=['frame'],
                         right_on=['frame'],
                         how='left',
                         suffixes=('_old', ''))
 
-    for col in columns_to_overwrite:
-        if col + '_old' in merged_df.columns:
-            merged_df.drop(columns=[col + '_old'], inplace=True)
+    # Remove old columns if they exist
+    columns_to_remove = [col for col in merged_df.columns if col.endswith('_old')]
+    if columns_to_remove:
+        merged_df.drop(columns=columns_to_remove, inplace=True)
 
     output_path = os.path.join(final_data_dir, output_csv_name)
-
     merged_df.to_csv(output_path, index=False)
+    
     print(f"Saved merged df to: {output_path}")
     print(f"Final merged df shape: {merged_df.shape}")
-    print(f"Final columns: {merged_df.columns.tolist()}")
-        
+    
     return merged_df
 
-def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angles_df,
-                           output_path, fps=10, bottom_alpha=0.5, top_alpha=0.7, 
-                           skeleton_dict=None):
+def create_visualization_video(image_dir, head_segments, skeletons, smoothed_masks, angles_df, output_path, fps=10):
+    """
+    Create visualization video showing smoothed masks, skeletons, and angles.
+    """
     COLORS = [
         (255, 0, 0),    # Red
         (0, 255, 0),    # Green
         (0, 0, 255),    # Blue
         (255, 0, 255),  # Magenta
         (0, 255, 255),  # Cyan
-        (128, 0, 0),    # Maroon
-        (128, 0, 128),  # Purple
-        (0, 0, 128),    # Navy
-        (128, 128, 0),  # Olive
-        (0, 128, 0),    # Dark Green
-        (0, 128, 128),  # Teal
-        (255, 128, 0),  # Orange
-        (255, 0, 128),  # Deep Pink
-        (128, 255, 0),  # Lime
         (255, 255, 0),  # Yellow
-        (0, 255, 128)   # Spring Green
     ]
 
-    def create_mask_overlay(image, frame_masks, mask_colors, alpha):
-        overlay = np.zeros_like(image)
-        
-        for mask_id, mask in frame_masks.items():
-            if mask.dtype != bool:
-                mask = mask > 0.5
-            
-            if mask.ndim > 2:
-                mask = mask.squeeze()
-            
-            mask_resized = cv2.resize(mask.astype(np.uint8), 
-                                    (image.shape[1], image.shape[0]), 
-                                    interpolation=cv2.INTER_NEAREST)            
-            colored_mask = np.zeros_like(image)
-            colored_mask[mask_resized == 1] = mask_colors[mask_id]            
-            overlay = cv2.addWeighted(overlay, 1, colored_mask, 1, 0)
-        
-        return overlay
-
-    def find_skeleton_tip(mask):
-        if mask.dtype != bool:
-            mask = mask > 0.5
-        
-        if mask.ndim > 2:
-            mask = mask.squeeze()
-            
-        y_coords, x_coords = np.where(mask)
-        if len(y_coords) == 0:
-            return None
-            
-        top_idx = np.argmin(y_coords)
-        return (y_coords[top_idx], x_coords[top_idx])
-
     def add_skeleton_overlay(image, frame_skeletons, skeleton_colors):
-        """Add skeleton visualization on top of the image"""
+        """Add skeleton visualization"""
         overlay = image.copy()
         
         for skeleton_id, skeleton_data in frame_skeletons.items():
-            # Handle both 2D and 3D skeleton formats
             if skeleton_data.ndim == 3:
                 skeleton = skeleton_data[0]
             else:
                 skeleton = skeleton_data
             
-            # Get skeleton points
             y_coords, x_coords = np.where(skeleton)
             if len(y_coords) == 0:
                 continue
             
-            # Draw skeleton points as small circles
             color = skeleton_colors[skeleton_id]
             for y, x in zip(y_coords, x_coords):
-                # Scale coordinates to image size if needed
-                img_y = int(y * image.shape[0] / skeleton.shape[0]) if skeleton.shape[0] != image.shape[0] else y
-                img_x = int(x * image.shape[1] / skeleton.shape[1]) if skeleton.shape[1] != image.shape[1] else x
-                
-                # Ensure coordinates are within image bounds
-                if 0 <= img_y < image.shape[0] and 0 <= img_x < image.shape[1]:
-                    cv2.circle(overlay, (img_x, img_y), 1, color, -1)
+                if 0 <= y < image.shape[0] and 0 <= x < image.shape[1]:
+                    cv2.circle(overlay, (x, y), 2, color, -1)
         
         return overlay
 
-    def add_angle_text(image, angle, position, font_scale=0.7):
-        """Add angle text at the given position with background"""
-        if position is None or angle is None:
+    def add_angle_text(image, angle):
+        """Add angle text in the center of the frame"""
+        if angle is None:
             return image
             
-        y, x = position
-        angle_text = f"{angle:.1f} deg"
+        angle_text = f"{angle:.1f}"
         
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_thickness = 2        
+        font_scale = 1.0
+        font_thickness = 3
+        
+        # Get text size to center it
         (text_width, text_height), baseline = cv2.getTextSize(
-            angle_text, font, font_scale, font_thickness)        
-        text_x = int(x + 30)
-        text_y = int(y)        
-        padding = 5
+            angle_text, font, font_scale, font_thickness)
+        
+        # Calculate center position
+        center_x = image.shape[1] // 2 - text_width // 2
+        center_y = image.shape[0] // 2 + text_height // 2
+        
+        # Add background rectangle for better visibility
+        padding = 10
         cv2.rectangle(image, 
-                     (text_x - padding, text_y - text_height - padding),
-                     (text_x + text_width + padding, text_y + padding),
+                     (center_x - padding, center_y - text_height - padding),
+                     (center_x + text_width + padding, center_y + baseline + padding),
                      (0, 0, 0), -1)  # Black background
         
-        cv2.putText(image, angle_text,
-                   (text_x, text_y + text_height),
-                   font, font_scale, (255, 255, 255),  # White text
-                   font_thickness)
+        # Add text
+        cv2.putText(image, angle_text, (center_x, center_y), 
+                   font, font_scale, (255, 255, 255), font_thickness)
         
         return image
 
+    # Get image files
     image_files = [f for f in os.listdir(image_dir) 
                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
     
@@ -965,125 +680,98 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
     if not frame_numbers:
         raise ValueError(f"No image files found in {image_dir}")
 
+    # Set up video writer
     first_image = cv2.imread(os.path.join(image_dir, frame_numbers[0][1]))
-    if first_image is None:
-        raise ValueError(f"Could not read first image: {frame_numbers[0][1]}")
-    
     height, width, _ = first_image.shape
-
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-    bottom_mask_ids = set()
-    top_mask_ids = set()
-    for masks in bottom_masks_dict.values():
-        bottom_mask_ids.update(masks.keys())
-    for masks in top_masks_dict.values():
-        top_mask_ids.update(masks.keys())
+    # Create color mappings
+    mask_ids = set()
+    for masks in smoothed_masks.values():
+        mask_ids.update(masks.keys())
     
-    mid_point = len(COLORS) // 2
-    bottom_colors = COLORS[:mid_point]
-    top_colors = COLORS[mid_point:] + COLORS[:max(0, len(top_mask_ids) - len(COLORS) // 2)]
-    
-    bottom_mask_colors = {mask_id: bottom_colors[i % len(bottom_colors)] 
-                         for i, mask_id in enumerate(bottom_mask_ids)}
-    top_mask_colors = {mask_id: top_colors[i % len(top_colors)] 
-                      for i, mask_id in enumerate(top_mask_ids)}
+    mask_colors = {mask_id: COLORS[i % len(COLORS)] for i, mask_id in enumerate(mask_ids)}
+    skeleton_colors = {mask_id: (255, 255, 0) for mask_id in mask_ids}  # Yellow skeletons
 
-    # Create skeleton colors (brighter colors for visibility)
-    skeleton_colors = {mask_id: (255, 255, 0) for mask_id in top_mask_ids}  # Yellow for all skeletons
-
-    angles_dict = angles_df.set_index('frame')['angle_degrees'].to_dict()
+    # Get angles dict
+    angles_dict = angles_df.set_index('frame')['angle_degrees'].to_dict() if not angles_df.empty else {}
 
     for frame_number, image_file in frame_numbers:
         try:
             image_path = os.path.join(image_dir, image_file)
             frame = cv2.imread(image_path)
             if frame is None:
-                raise ValueError(f"Could not read image: {image_file}")
+                continue
+            
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            if frame_number < 5:
-                print(f"Processing frame {frame_number}, file: {image_file}")
-                print(f"Bottom masks available: {frame_number in bottom_masks_dict}")
-                print(f"Top masks available: {frame_number in top_masks_dict}")
+            # Add smoothed mask overlay instead of original masks
+            if frame_number in smoothed_masks:
+                for mask_id, mask in smoothed_masks[frame_number].items():
+                    if mask.dtype != bool:
+                        mask = mask > 0.5
+                    
+                    if mask.ndim > 2:
+                        mask = mask.squeeze()
+                    
+                    # Create colored mask overlay
+                    colored_mask = np.zeros_like(frame)
+                    colored_mask[mask] = mask_colors[mask_id]
+                    frame = cv2.addWeighted(frame, 0.7, colored_mask, 0.3, 0)
             
-            final_frame = frame.copy();
+            # Add skeleton overlay
+            if frame_number in skeletons:
+                frame = add_skeleton_overlay(frame, skeletons[frame_number], skeleton_colors)
             
-            if frame_number in bottom_masks_dict:
-                bottom_overlay = create_mask_overlay(frame, 
-                                                  bottom_masks_dict[frame_number],
-                                                  bottom_mask_colors, 
-                                                  bottom_alpha)
-                final_frame = cv2.addWeighted(final_frame, 1, bottom_overlay, bottom_alpha, 0)
-            
-            tip_position = None
-            if frame_number in top_masks_dict:
-                top_overlay = create_mask_overlay(frame,
-                                               top_masks_dict[frame_number],
-                                               top_mask_colors,
-                                               top_alpha)
-                final_frame = cv2.addWeighted(final_frame, 1, top_overlay, top_alpha, 0)
-                
-                if top_masks_dict[frame_number]:
-                    first_mask_id = next(iter(top_masks_dict[frame_number]))
-                    tip_position = find_skeleton_tip(top_masks_dict[frame_number][first_mask_id])
-            
-            # Add skeleton overlay if skeleton_dict is provided
-            if skeleton_dict is not None and frame_number in skeleton_dict:
-                final_frame = add_skeleton_overlay(final_frame, skeleton_dict[frame_number], skeleton_colors)
-            
-            if frame_number in angles_dict and tip_position is not None:
-                final_frame = add_angle_text(final_frame, angles_dict[frame_number], tip_position)
+            # Add angle text
+            if frame_number in angles_dict:
+                frame = add_angle_text(frame, angles_dict[frame_number])
 
-            out.write(cv2.cvtColor(final_frame, cv2.COLOR_RGB2BGR))
+            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
         except Exception as e:
-            print(f"Error processing frame {frame_number} ({image_file}): {str(e)}")
+            print(f"Error processing frame {frame_number}: {str(e)}")
             continue
 
     out.release()
-    print(f"Video saved to {output_path}")
+    print(f"Visualization video saved to {output_path}")
 
-filename = get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_data_dir)
-head_segments = load_cleaned_segments_from_h5(filename)
-
-skeletons, skeleton_stats = process_all_frames(head_segments)
-truncated_skeletons = truncate_skeleton_fixed(skeletons, keep_pixels=400)
-results_df = process_skeleton_batch(
-    truncated_skeletons,
-    min_vector_length=5,
-    restriction_point=0.5,
-    straight_threshold=3,
-    smoothing_window=3,
-    deviation_threshold=12
-)
-
-merged_df = save_head_angles(filename, results_df, csv_input_dir, final_data_dir)
-
-# Create visualization video
-base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
-video_output_path = os.path.join(final_data_dir, f"{base_name}_headangle_visualization.mp4")
-
-# Check if corresponding image directory exists
-image_dir = os.path.join('2JPG', base_name)
-
-if image_dir and os.path.exists(image_dir):
-    print(f"Creating visualization video using images from: {image_dir}")
-    try:
-        create_layered_mask_video(
-            image_dir=image_dir,
-            bottom_masks_dict={},  # No bottom masks for this pipeline
-            top_masks_dict=head_segments,  # Use head segments as top masks
-            angles_df=merged_df,
-            output_path=video_output_path,
-            fps=10,
-            bottom_alpha=0.5,
-            top_alpha=0.7,
-            skeleton_dict=truncated_skeletons  # Pass skeleton data for visualization
-        )
-        print(f"Visualization video created: {video_output_path}")
-    except Exception as e:
-        print(f"Error creating visualization video: {str(e)}")
-else:
-    print(f"No image directory found for {base_name}. Checked: {image_dir}")
+# Main execution
+if __name__ == "__main__":
+    filename = get_random_unprocessed_video(head_segmentation_dir, csv_input_dir, final_data_dir)
+    print(f"Processing: {filename}")
+    
+    head_segments = load_cleaned_segments_from_h5(filename)
+    
+    skeletons, smoothed_masks, skeleton_stats = process_all_frames_alternative(head_segments)
+    
+    results_df = process_skeleton_batch_alternative(skeletons, min_skeleton_length=20)
+    
+    merged_df = save_head_angles(filename, results_df, csv_input_dir, final_data_dir)
+    
+    # Create visualization video
+    base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
+    video_output_path = os.path.join(final_data_dir, f"{base_name}_headangle_visualization.mp4")
+    
+    image_dir = os.path.join('2JPG', base_name)
+    
+    if os.path.exists(image_dir):
+        print(f"Creating visualization video using images from: {image_dir}")
+        try:
+            create_visualization_video(
+                image_dir=image_dir,
+                head_segments=head_segments,
+                skeletons=skeletons,
+                smoothed_masks=smoothed_masks,
+                angles_df=merged_df,
+                output_path=video_output_path,
+                fps=10
+            )
+            print(f"Visualization video created: {video_output_path}")
+        except Exception as e:
+            print(f"Error creating visualization video: {str(e)}")
+    else:
+        print(f"No image directory found for {base_name}. Checked: {image_dir}")
+    
+    print("Processing completed successfully!")
