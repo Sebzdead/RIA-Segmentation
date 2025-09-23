@@ -24,8 +24,8 @@ sam2_checkpoint = r"c:\Users\switte3\Documents\sam2\checkpoints\sam2.1_hiera_lar
 model_cfg = r"c:\Users\switte3\Documents\sam2\sam2\configs\sam2.1\sam2.1_hiera_l.yaml"
 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
 
-jpg_video_dir = '2JPG'
-head_segmentation_dir = '7HEAD_SEGMENT'
+jpg_video_dir = '2JPG/MMH223'
+head_segmentation_dir = '7HEAD_SEGMENT/MMH223'
 
 # Add quality thresholds and processing constants
 CONFIDENCE_THRESHOLD = 0.92  # minimum confidence score (0-1)
@@ -33,6 +33,42 @@ QUALITY_CHECK_INTERVAL = 50  # check quality every 50 frames
 VIS_INTERVAL = 50       # visualize masks every 50 frames
 CHUNK_SIZE = 300   # number of frames per chunk
 OVERLAP = 1        # number of overlapping frames between consecutive chunks
+APPLY_CLAHE = True  # Enable CLAHE contrast enhancement
+
+def apply_clahe_enhancement(image_path, clip_limit=2.0, tile_grid_size=(8, 8)):
+    """
+    Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance image contrast.
+    
+    Args:
+        image_path (str): Path to the input image
+        clip_limit (float): Threshold for contrast limiting
+        tile_grid_size (tuple): Size of the grid for histogram equalization
+    
+    Returns:
+        np.ndarray: Enhanced image
+    """
+    # Read the image
+    image = cv2.imread(image_path)
+    if image is None:
+        raise ValueError(f"Could not read image: {image_path}")
+    
+    # Convert BGR to LAB color space
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    
+    # Split LAB channels
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    
+    # Create CLAHE object and apply to L channel
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    l_channel_clahe = clahe.apply(l_channel)
+    
+    # Merge channels back
+    lab_clahe = cv2.merge([l_channel_clahe, a_channel, b_channel])
+    
+    # Convert back to BGR
+    enhanced_image = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+    
+    return enhanced_image
 
 def show_mask(mask, ax, obj_id=None, random_color=False):
     if random_color:
@@ -545,12 +581,13 @@ def get_sorted_frame_indices(names):
     return [int(os.path.splitext(n)[0]) for n in names]
 
 def create_chunk_dir(base_dir, indices, chunk_root, chunk_id):
-    """Create a temporary chunk directory with locally renumbered frames."""
+    """Create a temporary chunk directory with locally renumbered frames and optional CLAHE enhancement."""
     import shutil
     os.makedirs(chunk_root, exist_ok=True)
     chunk_dir = os.path.join(chunk_root, f"chunk_{chunk_id:04d}")
     os.makedirs(chunk_dir, exist_ok=True)
     local_to_global = []
+    
     for local_idx, global_idx in enumerate(indices):
         # Find the actual frame file
         frame_names = [f for f in os.listdir(base_dir) if f.lower().endswith(('.jpg', '.jpeg'))]
@@ -558,20 +595,44 @@ def create_chunk_dir(base_dir, indices, chunk_root, chunk_id):
         
         if global_idx < len(frame_names):
             src = os.path.join(base_dir, frame_names[global_idx])
-            src_abs = os.path.abspath(src)
             dst = os.path.join(chunk_dir, f"{local_idx:06d}.jpg")
-            try:
-                if not os.path.exists(dst):
-                    os.symlink(src_abs, dst)
-            except Exception:
-                # Fallback to copy if symlink not permitted
-                if not os.path.exists(dst):
-                    shutil.copy(src_abs, dst)
+            
+            if APPLY_CLAHE:
+                # Apply CLAHE enhancement and save enhanced frame
+                try:
+                    enhanced_image = apply_clahe_enhancement(src)
+                    cv2.imwrite(dst, enhanced_image)
+                    # print(f"Applied CLAHE to frame {global_idx} -> {local_idx}")
+                except Exception as e:
+                    # print(f"CLAHE failed for frame {global_idx}, using original: {e}")
+                    # Fallback to original frame
+                    try:
+                        src_abs = os.path.abspath(src)
+                        if not os.path.exists(dst):
+                            os.symlink(src_abs, dst)
+                    except Exception:
+                        if not os.path.exists(dst):
+                            shutil.copy(src_abs, dst)
+            else:
+                # Use original frame without enhancement
+                try:
+                    src_abs = os.path.abspath(src)
+                    if not os.path.exists(dst):
+                        os.symlink(src_abs, dst)
+                except Exception:
+                    # Fallback to copy if symlink not permitted
+                    if not os.path.exists(dst):
+                        shutil.copy(src_abs, dst)
+                        
         local_to_global.append(global_idx)
     return chunk_dir, local_to_global
 
 video_dir = get_random_unprocessed_video(jpg_video_dir, head_segmentation_dir)
 print(f"Processing video: {video_dir}")
+if APPLY_CLAHE:
+    print("CLAHE contrast enhancement: ENABLED")
+else:
+    print("CLAHE contrast enhancement: DISABLED")
 
 frame_names = [
     p for p in os.listdir(video_dir)

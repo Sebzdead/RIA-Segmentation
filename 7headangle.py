@@ -13,9 +13,9 @@ import re
 import cv2
 from collections import deque, defaultdict
 
-head_segmentation_dir = "7HEAD_SEGMENT"
-csv_input_dir = "6ANALYSIS"
-final_data_dir = "8HEAD_ANGLE"
+head_segmentation_dir = "7HEAD_SEGMENT/MMH223"
+csv_input_dir = "6ANALYSIS/MMH223"
+final_data_dir = "8HEAD_ANGLE/MMH223"
 
 def load_cleaned_segments_from_h5(filename):
     cleaned_segments = {}
@@ -31,7 +31,7 @@ def load_cleaned_segments_from_h5(filename):
                 frame_data[obj_id] = mask
             
             cleaned_segments[frame_idx] = frame_data
-            print(f"Loading frame {frame_idx}")
+            # print(f"Loading frame {frame_idx}")
     
     print(f"Cleaned segments loaded from {filename}")
     return cleaned_segments
@@ -759,7 +759,7 @@ if __name__ == "__main__":
             base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
             video_output_path = os.path.join(final_data_dir, f"{base_name}_headangle_visualization.mp4")
             
-            image_dir = os.path.join('2JPG', base_name)
+            image_dir = os.path.join('2JPG/MMH223', base_name)
             
             if os.path.exists(image_dir):
                 print(f"Creating visualization video using images from: {image_dir}")

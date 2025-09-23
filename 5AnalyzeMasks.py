@@ -9,9 +9,9 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 # Directory paths for input segments, output analysis data, and video frames
-segments_dir = '5RIA_SEGMENT'
-video_dir = '3CROP'
-final_data_dir = '6ANALYSIS'
+segments_dir = '5RIA_SEGMENT/MMH223'
+video_dir = '3CROP/MMH223'
+final_data_dir = '6ANALYSIS/MMH223'
 
 def load_cleaned_segments_from_h5(filename):
     """
@@ -262,18 +262,14 @@ def calculate_mean_values_and_pixel_counts(image, masks, background_coordinates)
         background_coordinates (np.ndarray): Array of background pixel coordinates
         
     Returns:
-        tuple: (mean_values_dict, pixel_counts_dict, top50_values_dict, top25_values_dict, top10_values_dict)
+        tuple: (mean_values_dict, pixel_counts_dict, top25_values_dict)
             - mean_values: {object_id: mean_value, 'background': bg_mean}
             - pixel_counts: {object_id: pixel_count}
-            - top50_values: {object_id: mean_of_top_50_pixels}
             - top25_values: {object_id: mean_of_top_25_pixels}
-            - top10_values: {object_id: mean_of_top_10_pixels}
     """
     mean_values = {}
     pixel_counts = count_mask_pixels(masks)
-    top50_values = {}
     top25_values = {}
-    top10_values = {}
     
     bg_pixel_values = image[background_coordinates[:, 0], background_coordinates[:, 1]]
     mean_values['background'] = np.mean(bg_pixel_values)
@@ -282,14 +278,6 @@ def calculate_mean_values_and_pixel_counts(image, masks, background_coordinates)
         mask_pixel_values = image[mask.squeeze()]
         mean_values[obj_id] = np.mean(mask_pixel_values)
         
-        # Calculate mean of top 50 brightest pixels
-        if len(mask_pixel_values) >= 50:
-            top_50_pixels = np.sort(mask_pixel_values)[-50:]
-            top50_values[obj_id] = np.mean(top_50_pixels)
-        else:
-            # If fewer than 50 pixels, use all pixels
-            top50_values[obj_id] = np.mean(mask_pixel_values)
-        
         # Calculate mean of top 25 brightest pixels
         if len(mask_pixel_values) >= 25:
             top_25_pixels = np.sort(mask_pixel_values)[-25:]
@@ -297,39 +285,25 @@ def calculate_mean_values_and_pixel_counts(image, masks, background_coordinates)
         else:
             # If fewer than 25 pixels, use all pixels
             top25_values[obj_id] = np.mean(mask_pixel_values)
-        
-        # Calculate mean of top 10 brightest pixels
-        if len(mask_pixel_values) >= 10:
-            top_10_pixels = np.sort(mask_pixel_values)[-10:]
-            top10_values[obj_id] = np.mean(top_10_pixels)
-        else:
-            # If fewer than 10 pixels, use all pixels
-            top10_values[obj_id] = np.mean(mask_pixel_values)
     
-    return mean_values, pixel_counts, top50_values, top25_values, top10_values
+    return mean_values, pixel_counts, top25_values
 
-def create_wide_format_table_with_bg_correction_and_pixel_count(mean_values, pixel_counts, top50_values, top25_values, top10_values):
+def create_wide_format_table_with_bg_correction_and_pixel_count(mean_values, pixel_counts, top25_values):
     """
     Create a wide-format DataFrame with brightness values, background correction, and pixel counts.
     
     Args:
         mean_values (dict): Dictionary {frame_idx: {object_id: mean_value, 'background': bg_value}}
         pixel_counts (dict): Dictionary {frame_idx: {object_id: pixel_count}}
-        top50_values (dict): Dictionary {frame_idx: {object_id: top50_mean_value}}
         top25_values (dict): Dictionary {frame_idx: {object_id: top25_mean_value}}
-        top10_values (dict): Dictionary {frame_idx: {object_id: top10_mean_value}}
         
     Returns:
         pd.DataFrame: Wide-format table with columns:
             - frame: frame index
             - object_id: raw mean brightness
             - object_id_bg_corrected: background-corrected brightness
-            - object_id_top50: mean of top 50 brightest pixels
-            - object_id_top50_bg_corrected: background-corrected top50 brightness
             - object_id_top25: mean of top 25 brightest pixels
             - object_id_top25_bg_corrected: background-corrected top25 brightness
-            - object_id_top10: mean of top 10 brightest pixels
-            - object_id_top10_bg_corrected: background-corrected top10 brightness
             - object_id_pixel_count: number of pixels in mask
     """
     data = {'frame': []}
@@ -342,21 +316,15 @@ def create_wide_format_table_with_bg_correction_and_pixel_count(mean_values, pix
     for obj in all_objects:
         data[obj] = []
         data[f"{obj}_bg_corrected"] = []
-        data[f"{obj}_top50"] = []
-        data[f"{obj}_top50_bg_corrected"] = []
         data[f"{obj}_top25"] = []
         data[f"{obj}_top25_bg_corrected"] = []
-        data[f"{obj}_top10"] = []
-        data[f"{obj}_top10_bg_corrected"] = []
         data[f"{obj}_pixel_count"] = []
     
     for frame_idx, frame_data in mean_values.items():
         data['frame'].append(frame_idx)
         bg_value = frame_data['background']
         frame_pixel_counts = pixel_counts[frame_idx]
-        frame_top50_values = top50_values[frame_idx]
         frame_top25_values = top25_values[frame_idx]
-        frame_top10_values = top10_values[frame_idx]
         
         for obj in all_objects:
             obj_value = frame_data.get(obj, np.nan)
@@ -368,16 +336,6 @@ def create_wide_format_table_with_bg_correction_and_pixel_count(mean_values, pix
                 bg_corrected = np.nan
             data[f"{obj}_bg_corrected"].append(bg_corrected)
             
-            # Top 50
-            top50_value = frame_top50_values.get(obj, np.nan)
-            data[f"{obj}_top50"].append(top50_value)
-            
-            if pd.notnull(top50_value):
-                top50_bg_corrected = top50_value - bg_value
-            else:
-                top50_bg_corrected = np.nan
-            data[f"{obj}_top50_bg_corrected"].append(top50_bg_corrected)
-            
             # Top 25
             top25_value = frame_top25_values.get(obj, np.nan)
             data[f"{obj}_top25"].append(top25_value)
@@ -387,16 +345,6 @@ def create_wide_format_table_with_bg_correction_and_pixel_count(mean_values, pix
             else:
                 top25_bg_corrected = np.nan
             data[f"{obj}_top25_bg_corrected"].append(top25_bg_corrected)
-            
-            # Top 10
-            top10_value = frame_top10_values.get(obj, np.nan)
-            data[f"{obj}_top10"].append(top10_value)
-            
-            if pd.notnull(top10_value):
-                top10_bg_corrected = top10_value - bg_value
-            else:
-                top10_bg_corrected = np.nan
-            data[f"{obj}_top10_bg_corrected"].append(top10_bg_corrected)
             
             data[f"{obj}_pixel_count"].append(frame_pixel_counts.get(obj, 0))
     
@@ -434,9 +382,7 @@ def process_cleaned_segments(cleaned_segments, filename):
 
     mean_values = {}
     pixel_counts = {}
-    top50_values = {}
     top25_values = {}
-    top10_values = {}
 
     for frame_idx, frame_masks in tqdm(cleaned_segments.items(), desc="Processing frames"):
         bg_coordinates = get_background_sample(frame_masks, image_shape)
@@ -446,14 +392,12 @@ def process_cleaned_segments(cleaned_segments, filename):
             print(f"Warning: Could not load image for frame {frame_idx}")
             continue
         
-        frame_mean_values, frame_pixel_counts, frame_top50_values, frame_top25_values, frame_top10_values = calculate_mean_values_and_pixel_counts(image, frame_masks, bg_coordinates)
+        frame_mean_values, frame_pixel_counts, frame_top25_values = calculate_mean_values_and_pixel_counts(image, frame_masks, bg_coordinates)
         mean_values[frame_idx] = frame_mean_values
         pixel_counts[frame_idx] = frame_pixel_counts
-        top50_values[frame_idx] = frame_top50_values
         top25_values[frame_idx] = frame_top25_values
-        top10_values[frame_idx] = frame_top10_values
 
-    df_wide_bg_corrected = create_wide_format_table_with_bg_correction_and_pixel_count(mean_values, pixel_counts, top50_values, top25_values, top10_values)
+    df_wide_bg_corrected = create_wide_format_table_with_bg_correction_and_pixel_count(mean_values, pixel_counts, top25_values)
     df_wide_bg_corrected.columns = df_wide_bg_corrected.columns.astype(str)
 
     if 'background' not in df_wide_bg_corrected.columns:
@@ -461,18 +405,14 @@ def process_cleaned_segments(cleaned_segments, filename):
         df_wide_bg_corrected['background'] = background_values
 
     background_column = ['background']
-    original_columns = [col for col in df_wide_bg_corrected.columns if not col.endswith('_bg_corrected') and not col.endswith('_pixel_count') and not col.endswith('_top50') and not col.endswith('_top25') and not col.endswith('_top10') and col != 'frame']
+    original_columns = [col for col in df_wide_bg_corrected.columns if not col.endswith('_bg_corrected') and not col.endswith('_pixel_count') and not col.endswith('_top25') and col != 'frame']
     original_columns = [col for col in original_columns if col != 'background']
-    bg_corrected_columns = [col for col in df_wide_bg_corrected.columns if col.endswith('_bg_corrected') and not col.endswith('_top50_bg_corrected') and not col.endswith('_top25_bg_corrected') and not col.endswith('_top10_bg_corrected')]
-    top50_columns = [col for col in df_wide_bg_corrected.columns if col.endswith('_top50') and not col.endswith('_top50_bg_corrected')]
-    top50_bg_corrected_columns = [col for col in df_wide_bg_corrected.columns if col.endswith('_top50_bg_corrected')]
+    bg_corrected_columns = [col for col in df_wide_bg_corrected.columns if col.endswith('_bg_corrected') and not col.endswith('_top25_bg_corrected')]
     top25_columns = [col for col in df_wide_bg_corrected.columns if col.endswith('_top25') and not col.endswith('_top25_bg_corrected')]
     top25_bg_corrected_columns = [col for col in df_wide_bg_corrected.columns if col.endswith('_top25_bg_corrected')]
-    top10_columns = [col for col in df_wide_bg_corrected.columns if col.endswith('_top10') and not col.endswith('_top10_bg_corrected')]
-    top10_bg_corrected_columns = [col for col in df_wide_bg_corrected.columns if col.endswith('_top10_bg_corrected')]
     pixel_count_columns = [col for col in df_wide_bg_corrected.columns if col.endswith('_pixel_count')]
 
-    all_columns = ['frame'] + background_column + original_columns + bg_corrected_columns + top50_columns + top50_bg_corrected_columns + top25_columns + top25_bg_corrected_columns + top10_columns + top10_bg_corrected_columns + pixel_count_columns
+    all_columns = ['frame'] + background_column + original_columns + bg_corrected_columns + top25_columns + top25_bg_corrected_columns + pixel_count_columns
 
     print(df_wide_bg_corrected[all_columns].describe())
 

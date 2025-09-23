@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script to create visualizations from head angle CSV files.
-Plots 1_top50 (nrD) and 2_top50 (nrV) against frame number for each CSV file.
+Plots 1_top25 (nrD) and 2_top25 (nrV) against frame number for each CSV file.
 """
 
 import os
@@ -23,7 +23,7 @@ def create_visualization(csv_path, output_dir):
         df = pd.read_csv(csv_path)
         
         # Check if required columns exist
-        required_cols = ['frame', '1_top50', '2_top50', 'angle_degrees']
+        required_cols = ['frame', '1_top25', '2_top25', 'angle_degrees']
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             print(f"Warning: Missing columns {missing_cols} in {csv_path}")
@@ -40,25 +40,25 @@ def create_visualization(csv_path, output_dir):
         # Flip the sign by multiplying by -1
         normalized_angles = -(df['angle_degrees'] / max_angle) if max_angle > 0 else df['angle_degrees']
         
-        # Normalize nrD (1_top50) to -1 to 1
-        nrd_min = df['1_top50'].min()
-        nrd_max = df['1_top50'].max()
+        # Normalize nrD (1_top25) to -1 to 1
+        nrd_min = df['1_top25'].min()
+        nrd_max = df['1_top25'].max()
         nrd_range = nrd_max - nrd_min
         if nrd_range > 0:
             # Scale to 0-1 first, then to -1 to 1
-            normalized_nrd = 2 * (df['1_top50'] - nrd_min) / nrd_range - 1
+            normalized_nrd = 2 * (df['1_top25'] - nrd_min) / nrd_range - 1
         else:
-            normalized_nrd = df['1_top50'] * 0  # All zeros if no range
+            normalized_nrd = df['1_top25'] * 0  # All zeros if no range
         
-        # Normalize nrV (2_top50) to -1 to 1
-        nrv_min = df['2_top50'].min()
-        nrv_max = df['2_top50'].max()
+        # Normalize nrV (2_top25) to -1 to 1
+        nrv_min = df['2_top25'].min()
+        nrv_max = df['2_top25'].max()
         nrv_range = nrv_max - nrv_min
         if nrv_range > 0:
             # Scale to 0-1 first, then to -1 to 1
-            normalized_nrv = 2 * (df['2_top50'] - nrv_min) / nrv_range - 1
+            normalized_nrv = 2 * (df['2_top25'] - nrv_min) / nrv_range - 1
         else:
-            normalized_nrv = df['2_top50'] * 0  # All zeros if no range
+            normalized_nrv = df['2_top25'] * 0  # All zeros if no range
         
         # Create the plot with wider aspect ratio for better temporal visualization
         fig, ax = plt.subplots(figsize=(20, 6))
@@ -120,8 +120,8 @@ def main():
     Main function to process all CSV files in the 8HEAD_ANGLE directory.
     """
     # Set up directories
-    head_angle_dir = "8HEAD_ANGLE"
-    visualization_dir = "8HEAD_ANGLE"
+    head_angle_dir = "8HEAD_ANGLE/MMH223"
+    visualization_dir = "8HEAD_ANGLE/MMH223"
     
     # Create output directory if it doesn't exist
     os.makedirs(visualization_dir, exist_ok=True)
